@@ -9,14 +9,13 @@ import tqdm.auto as tqdm
 import cv2
 import numpy as np
 
-from skimage.metrics import structural_similarity as ssim
-
 from optcbx import detect_characters
 from optcbx.units import parse_units, Character
 
 # Keep computational expensive variables in memory
 _portraits_paths = None
 _portraits = {}
+_valid_portraits_paths = {}
 _units = None
 _units_ids = None
 
@@ -27,14 +26,15 @@ def find_characters_from_screenshot(
         screenshot: np.ndarray,
         image_size: Union[int, Tuple[int, int]] = 64,
         dist_method: str = 'mse',
-        return_thumbnails: bool = False) -> List[Character]:
+        return_thumbnails: bool = False,
+        approach: str = 'smart') -> List[Character]:
 
     if isinstance(image_size, int):
         image_size = (image_size,) * 2
 
     global _units, _units_ids
 
-    characters = detect_characters(screenshot, image_size)
+    characters = detect_characters(screenshot, image_size, approach=approach)
     id_matches = find_characters_ids(characters, dist_method=dist_method)
 
     if _units is None:
@@ -58,18 +58,28 @@ def find_characters_ids(characters: np.ndarray,
     image_size = characters.shape[1:3]
 
     global _portraits, _portraits_paths
+    global _valid_portraits_paths
 
     if _portraits_paths is None:
         _portraits_paths = list(Path('data/Portraits').glob('*.png'))
 
     if image_size not in _portraits:
-        _portraits[image_size] = np.array(
-            [_load_im(o, image_size) for o in tqdm.tqdm(_portraits_paths)])
+        portraits = []
+        valid_paths = []
+        for path in tqdm.tqdm(_portraits_paths):
+            im = _load_im(path, image_size)
+            if im is None:
+                continue
+            portraits.append(im)
+            valid_paths.append(path)
+
+        _portraits[image_size] = np.array(portraits)
+        _valid_portraits_paths[image_size] = valid_paths
 
     best_matches = _top_similarities(characters,
                                      _portraits[image_size],
                                      method=dist_method)
-    ids = [int(_portraits_paths[i].stem) for i in best_matches]
+    ids = [int(_valid_portraits_paths[image_size][i].stem) for i in best_matches]
 
     if not return_portraits:
         return ids
@@ -79,6 +89,8 @@ def find_characters_ids(characters: np.ndarray,
 
 def _load_im(path, size):
     im = cv2.imread(str(path))
+    if im is None or im.size == 0:
+        return None
     return cv2.resize(im, size[::-1])
 
 
@@ -95,6 +107,8 @@ def _top_similarities(characters: np.ndarray,
         best_matches = np.argmax(-distances, -1)
 
     elif method == 'ssim':
+        from skimage.metrics import structural_similarity as ssim
+
         distances = []
         pool = mp.Pool(mp.cpu_count())
         for c in tqdm.tqdm(characters):

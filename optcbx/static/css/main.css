@@ -64,6 +64,12 @@
     line-height: 1.8em;
 }
 
+.list-group-item code,
+.export-error code {
+    white-space: normal;
+    word-break: break-word;
+}
+
 .slider {
     -webkit-appearance: none;
     width: 100%;
@@ -109,6 +115,11 @@
     margin-top: 20%;
     font-weight: bolder;
     width: 5rem; height: 5rem
+}
+
+.screenshot-preview img {
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
 }
 
 @media (max-width: 768px) {

@@ -30,52 +30,90 @@ will be able to do so with just a few minutes or even seconds 😲.
 characters that you don't own.
 
 
-## Try it out (Advanced users)
+## Local browser UI (Recommended)
 
-1. This project is fully implemented in Python, so make sure you have Python installed
-in your computer.
+This project is a Python web app for local use. It runs on your computer and you
+open the UI in a browser.
 
-2. Install the dependencies
+If you just want to run it from the repo root in VSCode terminal, use:
 
 ```bash
-$ pip install -r requirements.txt
+./tools/run-browser.sh
 ```
 
-3. *Optional*. Download the most recent units from [OPTC DB](https://github.com/optc-db/optc-db.github.io)
+It will install what is needed, start the local server, and open:
 
-```bash
-$ cd tools
-$ sh download-units.sh
-$ cd ..
+```text
+http://127.0.0.1:1234
 ```
 
-After running the above commands you should be able to find `units.json` under the data directory.
-
-
-4. Download the portraits images
+To stop it later:
 
 ```bash
-$ python -m optcbx download-portraits \
+kill $(cat .runtime/browser.pid)
+```
+
+Manual setup steps are below if you want to understand or control each step.
+
+1. Install the dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+2. *Optional*. Refresh the OPTC units metadata from [OPTC DB](https://github.com/optc-db/optc-db.github.io)
+
+```bash
+cd tools
+sh download-units.sh
+cd ..
+```
+
+This step updates `data/units.json`. The repo already includes a copy.
+
+3. Download the portraits used for matching
+
+```bash
+python -m optcbx download-portraits \
     --units data/units.json \
     --output data/Portraits
 ```
 
-4. Download pretrained CNNs
+4. Start the local web server
 
 ```bash
-$ cd ai
-$ sh prepare-ai.sh
-$ cd ..
+python -m optcbx flask --debug
 ```
 
-5. Run the demo with your screenshot
+5. Open the browser UI
+
+```text
+http://127.0.0.1:1234
+```
+
+The page now shows a startup checklist. If any required file is missing, the UI
+will tell you exactly which local assets still need to be downloaded.
+
+`DATABASE_URL` is now optional for local runs. Without it, the app still starts
+normally and the feedback feature is simply disabled.
+
+## CLI demo (Legacy)
+
+If you prefer the old OpenCV window demo, run:
 
 ```bash
-$ python -m optcbx demo <screenshot-path>
+python -m optcbx demo <screenshot-path>
 ```
 
-> Note: If OpenCV shows warnings regarding to png files, run the `fix.bat` 
-inside `tools` directory
+The CLI demo is legacy code. It still needs extra AI assets from:
+
+```bash
+cd ai
+sh prepare-ai.sh
+cd ..
+```
+
+> Note: If OpenCV shows warnings regarding png files, run `fix.bat` inside `tools`.
 
 ## How it works (Advanced users)
 

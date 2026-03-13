@@ -9,6 +9,9 @@ tools/modifiedUnits.js
 # Python
 *.pyc
 __pycache__/
+.venv/
+.venv39/
+.runtime/
 
 # Visual Studio Code
 .vscode/

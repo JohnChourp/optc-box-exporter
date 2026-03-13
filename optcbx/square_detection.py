@@ -162,6 +162,12 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
                             threshold=150,
                             minLineLength=5,
                             maxLineGap=4)
+    if lines is None:
+        if not return_rectangles:
+            return np.empty((0, *(characters_size or (0, 0)), 3), dtype='uint8')
+        return (np.empty((0, *(characters_size or (0, 0)), 3), dtype='uint8'),
+                np.empty((0, 4), dtype='int32'))
+
     lines = lines.reshape(-1, 4)
 
     # Draw completely horizontal and vertical lines and expand them to fit the
@@ -176,6 +182,12 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
     # With the binarized image, we retrieve the countours
     cnts = cv2.findContours(res, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+
+    if not cnts:
+        if not return_rectangles:
+            return np.empty((0, *(characters_size or (0, 0)), 3), dtype='uint8')
+        return (np.empty((0, *(characters_size or (0, 0)), 3), dtype='uint8'),
+                np.empty((0, 4), dtype='int32'))
 
     # Get the rectangles surrounding the countors and compute its area and aspect
     # ratio
@@ -193,9 +205,15 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
     valid_rectangles &= (ar > .8) & (ar < 1.2)
 
     valid_rects = rects[valid_rectangles].astype('int32')
-    characters = [image[y:y + h, x:x + w] for x, y, w, h in valid_rects]
+    valid_rects, characters = _extract_valid_character_crops(image, valid_rects)
 
     if characters_size is not None:
+        if len(characters) == 0:
+            empty = np.empty((0, *characters_size, 3), dtype='uint8')
+            if not return_rectangles:
+                return empty
+            return empty, np.empty((0, 4), dtype='int32')
+
         characters = np.array(
             [cv2.resize(o, characters_size) for o in characters])
 
@@ -234,6 +252,30 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
         valid_rects[..., 2] = valid_rects[..., 0] + valid_rects[..., 2]
         valid_rects[..., 3] = valid_rects[..., 1] + valid_rects[..., 3]
         return characters, valid_rects
+
+
+def _extract_valid_character_crops(image: np.ndarray, rects: np.ndarray):
+    valid_rects = []
+    characters = []
+    height, width = image.shape[:2]
+
+    for x, y, w, h in rects:
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(width, x + w)
+        y2 = min(height, y + h)
+
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        crop = image[y1:y2, x1:x2]
+        if crop.size == 0:
+            continue
+
+        valid_rects.append([x1, y1, x2 - x1, y2 - y1])
+        characters.append(crop)
+
+    return np.asarray(valid_rects, dtype='int32'), characters
 
 
 if __name__ == "__main__":

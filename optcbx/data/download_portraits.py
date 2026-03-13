@@ -10,6 +10,11 @@ import requests
 from optcbx.units import viable_unit
 from tqdm.contrib.concurrent import thread_map
 
+RAW_GITHUB_PORTRAITS = (
+    'https://raw.githubusercontent.com/optc-db/optc-db.github.io/master/'
+    'api/images/thumbnail/glo'
+)
+
 
 def get_portrait_url(cid: Optional[str]) -> str:
     if cid is None:
@@ -889,6 +894,19 @@ def generate_id(idx: int) -> str:
     return '0' * padding + idx
 
 
+def get_repo_portrait_url(cid: str) -> str:
+    cid = str(cid).zfill(4)
+    return f"{RAW_GITHUB_PORTRAITS}/{cid[0]}/{cid[1]}00/{cid}.png"
+
+
+def _is_valid_png(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+
+    with open(path, 'rb') as handle:
+        return handle.read(8) == b'\x89PNG\r\n\x1a\n'
+
+
 def download_portrait(p: Tuple[str, str], out_path: Path):
     cid, url = p
     dst_path = str(out_path / f"{cid}.png")
@@ -896,8 +914,8 @@ def download_portrait(p: Tuple[str, str], out_path: Path):
     if url.startswith('../res'):
         url = url.replace('../res', 'https://optc-db.github.io/res')
 
-    r = requests.get(url, stream=True)
-    if r.status_code == 200:
+    r = requests.get(url, stream=True, timeout=30)
+    if r.status_code == 200 and 'image/png' in r.headers.get('content-type', ''):
         with open(dst_path, 'wb') as f:
             r.raw.decode_content = True
             shutil.copyfileobj(r.raw, f)
@@ -920,11 +938,11 @@ def main(units: str, output: str):
 
     units = json.load(open(units))
     units = [viable_unit(o) for o in units]
-    portraits_urls = [(i, get_portrait_url(generate_id(i)))
+    portraits_urls = [(i, get_repo_portrait_url(generate_id(i)))
                       for i, u in enumerate(units, start=1) if u]
     total_portraits = len(portraits_urls)
     portraits_urls = [(i, url) for i, url in portraits_urls
-                      if not (output / f"{i}.png").exists()]
+                      if not _is_valid_png(output / f"{i}.png")]
     already_exits_portraits = total_portraits - len(portraits_urls)
     if already_exits_portraits:
         print(f"Skipping {already_exits_portraits} because already exists...")

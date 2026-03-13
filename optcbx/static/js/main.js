@@ -1,19 +1,26 @@
 var currentScreenshotB64 = '';
 
 $(document).ready(function () {
-
     $('#sidebarCollapse').on('click', function () {
         $('#sidebar').toggleClass('active');
     });
 
     $('#image-size-slider').change(function () {
         $('.slider-disp').html(`Image Size: ${this.value}x${this.value}`);
-    })
+    });
 
     $('#screenshot-file').change(function () {
-        console.log('New file detected');
         var file = this.files[0],
             reader = new FileReader();
+
+        clearMessages();
+
+        if (!file) {
+            currentScreenshotB64 = '';
+            $("#export-btn").attr('disabled', true);
+            $('.screenshot-preview').empty();
+            return;
+        }
 
         reader.onloadend = function () {
             var b64 = reader.result.replace(/^data:.+;base64,/, '');
@@ -35,7 +42,7 @@ $(document).ready(function () {
 });
 
 function exportCharacterBox() {
-    const imageSize = parseInt($('#image-size-slider').val());    
+    const imageSize = parseInt($('#image-size-slider').val());
     const image = currentScreenshotB64;
     const body = {
         imageSize,
@@ -43,17 +50,33 @@ function exportCharacterBox() {
         returnThumbnails: true
     };
 
-    console.log(imageSize);
+    clearMessages();
+
+    if (!image) {
+        showError('Pick a screenshot before exporting.');
+        return;
+    }
 
     load();
-    post('/export', body).then(renderExport);
+    post('/export', body)
+        .then(renderExport)
+        .catch(renderExportError)
+        .finally(endLoad);
 }
 
 function renderExport(response) {
-    console.log(response)
     const n = response.characters.length;
     const characters = response.characters;
-    const thumbnails = response.thumbnails;
+    const thumbnails = response.thumbnails || [];
+
+    $('.export-summary').html(
+        `<div class="alert alert-success">Recognized ${n} OPTC unit${n === 1 ? '' : 's'}.</div>`
+    );
+
+    if (!n) {
+        $('.export-disp').html('');
+        return;
+    }
 
     let table = `
         <table class="table table-hover">
@@ -62,36 +85,25 @@ function renderExport(response) {
                     <th scope="col">#</th>
                     <th scope="col">Thumbnail</th>
                     <th scope="col">Name</th>
-                    <th scope="col">Actions</th>
                 </tr>
         </thead>
         <tbody>`;
     for (let i = 0; i < n; i++) {
         const c = characters[i];
-        const t = thumbnails[i];
+        const t = thumbnails[i] || '';
         const url = "https://optc-db.github.io/characters/#/view/" + c.number;
-        
-        const actions = `
-            <div id="${i}-actions" class="btn-group" role="group" aria-label="Basic example">
-                <button id="${i}-ok"  onclick="updateFeed(${i}, 'ok')" "type="button" class="btn btn-outline-success"><i class="fas fa-smile-beam"></i></button>
-                <button id="${i}-meh" onclick="updateFeed(${i}, 'meh')" type="button" class="btn btn-outline-warning"><i class="fas fa-meh"></i></button>
-                <button id="${i}-bad" onclick="updateFeed(${i}, 'bad')" type="button" class="btn btn-outline-danger"><i class="fas fa-sad-tear"></i></button>
-            </div>
-        `;
 
         const row = `
             <tr>
                 <th scope="row">${c.number}</th>
                 <td><img src="${t}" class="img-fluid"></td>
-                <td><a href="${url}">${c.name}</a></td>
-                <td>${actions}</td>
+                <td><a href="${url}" target="_blank" rel="noopener noreferrer">${c.name}</a></td>
             </tr>
         `;
         table += row;
     }
     table = table + `</tbody></table>`;
     $(".export-disp").html(table);
-    endLoad();
 }
 
 function load() {
@@ -112,14 +124,32 @@ function endLoad() {
     });
 }
 
-function updateFeed(i, fb) {
-    const colors = {
-        ok: "text-success",
-        meh: "text-warning",
-        bad: "text-danger"
+function renderExportError(xhr) {
+    const response = xhr.responseJSON || {};
+    let message = response.message || 'Export failed.';
+
+    if (response.runtime && response.runtime.missing_web_requirements) {
+        const missing = response.runtime.missing_web_requirements
+            .map(item => `<li><code>${item.path}</code> - ${item.help}</li>`)
+            .join('');
+
+        if (missing) {
+            message += `<ul class="mb-0 mt-2">${missing}</ul>`;
+        }
     }
-    $('#' + i + '-actions').html(`<span class="${colors[fb]}"><b>Thanks!</b></span>`);
-    post("/feedback", {fb}).then(function () { console.log("FB sent!"); });
+
+    showError(message);
+    $('.export-disp').html('');
+    $('.export-summary').html('');
+}
+
+function clearMessages() {
+    $('.export-error').html('');
+    $('.export-summary').html('');
+}
+
+function showError(message) {
+    $('.export-error').html(`<div class="alert alert-danger">${message}</div>`);
 }
 
 function post(path, body) {
@@ -131,7 +161,7 @@ function post(path, body) {
             contentType: "application/json",
             dataType: "json",
             success: data => resolve(data),
-            error: console.err
-        })
+            error: xhr => reject(xhr)
+        });
     });
 }
