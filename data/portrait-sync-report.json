@@ -1,0 +1,29 @@
+{
+  "generatedAt": "2026-03-14T05:47:45.982117+00:00",
+  "sourceVersion": "unknown",
+  "viableCount": 4800,
+  "viableIdsHash": "a9cc3edc47d099af4149d8787a43e5a054d80b05",
+  "unresolvedIds": [
+    4204,
+    4206,
+    4207,
+    4208,
+    4209,
+    4210,
+    4214,
+    4215,
+    5602,
+    5603,
+    5604,
+    5605
+  ],
+  "failedIds": [],
+  "summary": {
+    "copied": 0,
+    "downloaded": 0,
+    "skipped": 4788,
+    "repaired": 0,
+    "unresolved": 12,
+    "failed": 0
+  }
+}

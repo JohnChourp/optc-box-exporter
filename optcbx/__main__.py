@@ -8,6 +8,7 @@ import numpy as np
 import optcbx
 from optcbx import data
 from optcbx import nn
+from optcbx import audit
 
 
 @click.group()
@@ -85,4 +86,5 @@ if __name__ == "__main__":
     main.add_command(data.synthetic_dataset.main, name='synthetic')
     main.add_command(nn.compute_portraits_features.main,
                      name='gen-portraits-features')
+    main.add_command(audit.main)
     main()

@@ -35,6 +35,9 @@ characters that you don't own.
 This project is a Python web app for local use. It runs on your computer and you
 open the UI in a browser.
 
+All commands in this section assume your current terminal is already at the
+project root (`optc-box-exporter`).
+
 If you just want to run it from the repo root in VSCode terminal, use:
 
 ```bash
@@ -50,7 +53,7 @@ http://127.0.0.1:1234
 To stop it later:
 
 ```bash
-kill $(cat .runtime/browser.pid)
+./tools/stop-browser.sh
 ```
 
 Manual setup steps are below if you want to understand or control each step.
@@ -61,22 +64,31 @@ Manual setup steps are below if you want to understand or control each step.
 pip install -r requirements.txt
 ```
 
-2. *Optional*. Refresh the OPTC units metadata from [OPTC DB](https://github.com/optc-db/optc-db.github.io)
+2. Refresh the OPTC units metadata from [OPTC DB](https://github.com/optc-db/optc-db.github.io) when you want the latest roster
 
 ```bash
-cd tools
-sh download-units.sh
-cd ..
+sh ./tools/download-units.sh
 ```
 
 This step updates `data/units.json`. The repo already includes a copy.
 
-3. Download the portraits used for matching
+3. Sync the portraits used for matching
 
 ```bash
 python -m optcbx download-portraits \
     --units data/units.json \
     --output data/Portraits
+```
+
+If you also have the sibling `optc-team-builder` repo next to this project, the
+command automatically reuses its local `thumbnails-glo` cache. You can also pass
+it explicitly:
+
+```bash
+python -m optcbx download-portraits \
+    --units data/units.json \
+    --output data/Portraits \
+    --team-builder-root ../optc-team-builder
 ```
 
 4. Start the local web server
@@ -91,11 +103,30 @@ python -m optcbx flask --debug
 http://127.0.0.1:1234
 ```
 
-The page now shows a startup checklist. If any required file is missing, the UI
-will tell you exactly which local assets still need to be downloaded.
+The page now shows a startup checklist. It validates portrait coverage against
+the current local units dataset, not just file presence, and it reports any
+blocking gaps before export starts.
 
 `DATABASE_URL` is now optional for local runs. Without it, the app still starts
 normally and the feedback feature is simply disabled.
+
+The browser export also includes optional filters for unit `type` and `class`.
+Leaving them empty keeps the existing full-roster search.
+
+- Types: `STR`, `DEX`, `QCK`, `PSY`, and `INT`
+- Classes: `Booster`, `Cerebral`, `Driven`, `Evolver`, `Fighter`, `Free Spirit`,
+  `Powerhouse`, `Shooter`, `Slasher`, and `Striker`
+
+Selecting one or more values applies a strict portrait-candidate filter before
+matching, which usually makes exports faster and more accurate when you already
+know the type/class mix in the screenshot. When both filters are active, a
+portrait must satisfy both groups.
+
+Known upstream unresolved portrait IDs are currently:
+
+```text
+4204, 4206, 4207, 4208, 4209, 4210, 4214, 4215, 5602, 5603, 5604, 5605
+```
 
 ## CLI demo (Legacy)
 
@@ -108,9 +139,7 @@ python -m optcbx demo <screenshot-path>
 The CLI demo is legacy code. It still needs extra AI assets from:
 
 ```bash
-cd ai
-sh prepare-ai.sh
-cd ..
+sh ./ai/prepare-ai.sh
 ```
 
 > Note: If OpenCV shows warnings regarding png files, run `fix.bat` inside `tools`.

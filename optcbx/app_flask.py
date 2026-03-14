@@ -18,6 +18,7 @@ except ImportError:
     psycopg2 = None
 
 import optcbx
+from optcbx.data.download_portraits import build_local_portrait_status
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
@@ -45,7 +46,7 @@ RUNTIME_REQUIREMENTS = [
         "pattern": '*.png',
         "required_for": "Browser UI + CLI demo",
         "help": ("Run `python -m optcbx download-portraits --units data/units.json "
-                  "--output data/Portraits`.")
+                  "--output data/Portraits [--team-builder-root ../optc-team-builder]`.")
     },
     {
         "key": "detector_config",
@@ -94,6 +95,8 @@ CLI_REQUIRED_KEYS = WEB_REQUIRED_KEYS | {
     'feature_extractor',
     'portrait_features'
 }
+SUPPORTED_TYPES = optcbx.SUPPORTED_TYPES
+SUPPORTED_CLASSES = optcbx.SUPPORTED_CLASSES
 
 
 def _init_feedback_connection():
@@ -122,12 +125,22 @@ connection, feedback_status = _init_feedback_connection()
 
 def _build_runtime_status():
     checks = []
+    portrait_status = build_local_portrait_status(
+        DATA_DIR / 'units.json',
+        DATA_DIR / 'Portraits',
+    )
 
     for requirement in RUNTIME_REQUIREMENTS:
         path = requirement["path"]
         kind = requirement["kind"]
+        help_text = requirement["help"]
+        details = None
 
-        if kind == 'glob':
+        if requirement["key"] == 'portraits':
+            available = portrait_status["ready"]
+            details = portrait_status
+            help_text = f"{portrait_status['summary']} {help_text}"
+        elif kind == 'glob':
             available = path.exists() and any(path.glob(requirement["pattern"]))
         else:
             available = path.exists()
@@ -138,7 +151,12 @@ def _build_runtime_status():
             "path": requirement["path_display"],
             "available": available,
             "required_for": requirement["required_for"],
-            "help": requirement["help"]
+            "help": help_text,
+            "details": details,
+            "status_label": (
+                "Ready" if available else
+                ("Needs sync" if requirement["key"] == 'portraits' else "Missing")
+            ),
         })
 
     availability = {item["key"]: item["available"] for item in checks}
@@ -156,13 +174,19 @@ def _build_runtime_status():
         "missing_web_requirements": missing_web,
         "missing_cli_requirements": missing_cli,
         "feedback_enabled": connection is not None,
-        "feedback_status": feedback_status
+        "feedback_status": feedback_status,
+        "portrait_status": portrait_status,
     }
 
 
 @app.route('/')
 def index():
-    return render_template("index.html", runtime=_build_runtime_status())
+    return render_template(
+        "index.html",
+        runtime=_build_runtime_status(),
+        supported_types=SUPPORTED_TYPES,
+        supported_classes=SUPPORTED_CLASSES,
+    )
 
 
 @app.route('/runtime-status')
@@ -196,6 +220,24 @@ def export():
     im_size = int(payload.get("imageSize", 64))
     return_thumbnails = payload.get("returnThumbnails", False)
 
+    try:
+        allowed_types = optcbx.normalize_allowed_types(payload.get("types"))
+    except ValueError as exc:
+        return {
+            "message": str(exc),
+            "appliedTypes": [],
+            "appliedClasses": [],
+        }, 400
+
+    try:
+        allowed_classes = optcbx.normalize_allowed_classes(payload.get("classes"))
+    except ValueError as exc:
+        return {
+            "message": str(exc),
+            "appliedTypes": list(allowed_types),
+            "appliedClasses": [],
+        }, 400
+
     if not b64_image:
         return {"message": "Missing screenshot payload."}, 400
 
@@ -224,44 +266,78 @@ def export():
                 im,
                 im_size,
                 return_thumbnails=True,
-                approach='gradient_based')
+                approach='gradient_based',
+                allowed_types=allowed_types,
+                allowed_classes=allowed_classes,
+            )
             thumbnails = np.flip(thumbnails, -1)
 
             if len(characters) == 0:
                 return {
-                    "message": ("No OPTC portraits were detected in this screenshot. "
-                                "Try a clear character box screenshot.")
+                    "message": _build_no_detection_message(allowed_types, allowed_classes),
+                    "appliedTypes": list(allowed_types),
+                    "appliedClasses": list(allowed_classes),
                 }, 422
 
             response = {
                 "characters": [dict(o._asdict()) for o in characters],
-                "thumbnails": [_img_to_b64(o) for o in thumbnails]
+                "thumbnails": [_img_to_b64(o) for o in thumbnails],
+                "appliedTypes": list(allowed_types),
+                "appliedClasses": list(allowed_classes),
             }
         else:
             characters = optcbx.find_characters_from_screenshot(
                 im,
                 im_size,
                 return_thumbnails=False,
-                approach='gradient_based')
+                approach='gradient_based',
+                allowed_types=allowed_types,
+                allowed_classes=allowed_classes,
+            )
 
             if len(characters) == 0:
                 return {
-                    "message": ("No OPTC portraits were detected in this screenshot. "
-                                "Try a clear character box screenshot.")
+                    "message": _build_no_detection_message(allowed_types, allowed_classes),
+                    "appliedTypes": list(allowed_types),
+                    "appliedClasses": list(allowed_classes),
                 }, 422
 
-            response = {"characters": [dict(o._asdict()) for o in characters]}
+            response = {
+                "characters": [dict(o._asdict()) for o in characters],
+                "appliedTypes": list(allowed_types),
+                "appliedClasses": list(allowed_classes),
+            }
     except FileNotFoundError as exc:
         runtime = _build_runtime_status()
         return jsonify({
             "message": f"Missing runtime asset: {exc}",
             "runtime": runtime
         }), 400
+    except optcbx.NoMatchingPortraitCandidatesError as exc:
+        return {
+            "message": str(exc),
+            "appliedTypes": list(allowed_types),
+            "appliedClasses": list(allowed_classes),
+        }, 422
     except Exception as exc:
         print(str(exc))
         return {"message": f"Export failed: {exc}"}, 500
 
     return jsonify(response)
+
+
+def _build_no_detection_message(allowed_types, allowed_classes):
+    message = ("No OPTC portraits were detected in this screenshot. "
+               "Try a clear character box screenshot.")
+    active_filters = []
+    if allowed_types:
+        active_filters.append(f"types={', '.join(allowed_types)}")
+    if allowed_classes:
+        active_filters.append(f"classes={', '.join(allowed_classes)}")
+
+    if active_filters:
+        return message + " Active filters: " + "; ".join(active_filters) + "."
+    return message
 
 
 def _img_to_b64(im):

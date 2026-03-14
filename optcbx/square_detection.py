@@ -8,6 +8,13 @@ ImageSize = Union[Tuple[int, int], int]
 DetectResults = Union[List[np.ndarray], Tuple[List[np.ndarray],
                                               List[np.ndarray]]]
 
+CHARACTER_TRIM_FRACTIONS = {
+    'top': 0.03,
+    'right': 0.05,
+    'bottom': 0.12,
+    'left': 0.03,
+}
+
 
 def select_rgb_white_yellow(image: np.ndarray) -> np.ndarray:
     # white color mask
@@ -46,6 +53,29 @@ def draw_lines(image: np.ndarray, lines: np.ndarray) -> np.ndarray:
         cv2.line(image, (x1, y1), (x2, y2), [255, 255, 255], 2)
 
     return image
+
+
+def trim_character_crop(image: np.ndarray) -> np.ndarray:
+    if image.size == 0:
+        return image
+
+    height, width = image.shape[:2]
+
+    top = int(round(height * CHARACTER_TRIM_FRACTIONS['top']))
+    right = int(round(width * CHARACTER_TRIM_FRACTIONS['right']))
+    bottom = int(round(height * CHARACTER_TRIM_FRACTIONS['bottom']))
+    left = int(round(width * CHARACTER_TRIM_FRACTIONS['left']))
+
+    y1 = min(max(top, 0), max(height - 2, 0))
+    x1 = min(max(left, 0), max(width - 2, 0))
+    y2 = max(y1 + 1, height - max(bottom, 0))
+    x2 = max(x1 + 1, width - max(right, 0))
+
+    if y2 <= y1 or x2 <= x1:
+        return image
+
+    trimmed = image[y1:y2, x1:x2]
+    return trimmed if trimmed.size else image
 
 
 def detect_characters(image: Union[str, np.ndarray],
@@ -206,6 +236,7 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
 
     valid_rects = rects[valid_rectangles].astype('int32')
     valid_rects, characters = _extract_valid_character_crops(image, valid_rects)
+    characters = [trim_character_crop(o) for o in characters]
 
     if characters_size is not None:
         if len(characters) == 0:

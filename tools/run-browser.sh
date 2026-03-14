@@ -39,20 +39,17 @@ fi
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -r requirements.txt
 
-VALID_PORTRAITS="$(
+BLOCKING_PORTRAITS="$(
 python - <<'PY'
 from pathlib import Path
+from optcbx.data.download_portraits import build_local_portrait_status
 
-count = 0
-for path in Path('data/Portraits').glob('*.png'):
-    with open(path, 'rb') as handle:
-        if handle.read(8) == b'\x89PNG\r\n\x1a\n':
-            count += 1
-print(count)
+status = build_local_portrait_status(Path('data/units.json'), Path('data/Portraits'))
+print(status['blocking_missing_count'])
 PY
 )"
 
-if [ "${VALID_PORTRAITS:-0}" = "0" ]; then
+if [ "${BLOCKING_PORTRAITS:-0}" != "0" ]; then
     python -m optcbx download-portraits \
         --units data/units.json \
         --output data/Portraits

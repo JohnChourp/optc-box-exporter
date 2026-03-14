@@ -25,9 +25,12 @@
             <div><code>{{ check.path }}</code></div>
             <small class="text-muted">{{ check.required_for }}</small>
             <div><small class="text-muted">{{ check.help }}</small></div>
+            {% if check.details and check.details.blocking_missing_count %}
+            <div><small class="text-muted">Blocking missing IDs: {{ check.details.blocking_missing_count }}</small></div>
+            {% endif %}
           </div>
           <span class="badge {% if check.available %}badge-success{% else %}badge-secondary{% endif %}">
-            {% if check.available %}Ready{% else %}Missing{% endif %}
+            {{ check.status_label }}
           </span>
         </div>
       </li>
@@ -55,6 +58,55 @@
     id="image-size-slider">
 </div>
 
+<div class="match-filter mt-4">
+  <h4>Type Filter (Optional)</h4>
+  <p>
+    Limit matching to the unit types that are actually present in this screenshot.
+    Leave everything unchecked to search across all types.
+  </p>
+
+  <div class="match-filter__options" role="group" aria-label="Character types filter">
+    {% for supported_type in supported_types %}
+    <label class="match-filter__chip" for="type-filter-{{ supported_type }}">
+      <input type="checkbox"
+        class="type-filter-input"
+        id="type-filter-{{ supported_type }}"
+        value="{{ supported_type }}">
+      <span>{{ supported_type }}</span>
+    </label>
+    {% endfor %}
+  </div>
+
+  <small class="text-muted">
+    Dual-type characters remain eligible when either of their types matches the selected filter.
+  </small>
+</div>
+
+<div class="match-filter mt-4">
+  <h4>Class Filter (Optional)</h4>
+  <p>
+    Limit matching to the unit classes that are actually present in this screenshot.
+    Leave everything unchecked to search across all classes.
+  </p>
+
+  <div class="match-filter__options" role="group" aria-label="Character classes filter">
+    {% for supported_class in supported_classes %}
+    <label class="match-filter__chip" for="class-filter-{{ loop.index }}">
+      <input type="checkbox"
+        class="class-filter-input"
+        id="class-filter-{{ loop.index }}"
+        value="{{ supported_class }}">
+      <span>{{ supported_class }}</span>
+    </label>
+    {% endfor %}
+  </div>
+
+  <small class="text-muted">
+    Dual-class characters remain eligible when either of their classes matches the selected filter.
+    If both type and class filters are selected, a portrait must satisfy both groups.
+  </small>
+</div>
+
 <form class="mt-2 pt-3">
   <h4>Upload Screenshot</h4>
 
@@ -76,3 +128,9 @@
 <div class="mt-3 export-summary"></div>
 <div class="export-error"></div>
 <div class="export-disp"></div>
+<div class="export-toolbar">
+  <button class="btn btn-warning"
+    id="download-export-btn"
+    onclick="downloadFavoritesExport()"
+    disabled="true">Download favorites JSON</button>
+</div>

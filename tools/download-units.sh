@@ -1,10 +1,18 @@
-rm -f units.js
+set -euo pipefail
 
-wget https://raw.githubusercontent.com/optc-db/optc-db.github.io/master/common/data/units.js
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
-units_js_content=$(cat units.js)
-echo "const window = {};\n${units_js_content}" > modifiedUnits.js
-echo 'const unitsJSON = JSON.stringify(window.units)' >> modifiedUnits.js
-echo 'const fs = require("fs");' >> modifiedUnits.js
-echo 'fs.writeFile("../data/units.json", unitsJSON, () => console.log("Done"))' >> modifiedUnits.js
-node modifiedUnits.js
+curl -fsSL \
+    https://raw.githubusercontent.com/optc-db/optc-db.github.io/master/common/data/units.js \
+    -o "$TMP_DIR/units.js"
+
+{
+    printf 'const window = {};\n'
+    cat "$TMP_DIR/units.js"
+    printf '\nconst unitsJSON = JSON.stringify(window.units);\n'
+    printf 'const fs = require("fs");\n'
+    printf 'fs.writeFileSync("../data/units.json", unitsJSON + "\\n");\n'
+} > "$TMP_DIR/modifiedUnits.js"
+
+node "$TMP_DIR/modifiedUnits.js"
