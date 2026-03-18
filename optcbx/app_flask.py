@@ -97,6 +97,9 @@ CLI_REQUIRED_KEYS = WEB_REQUIRED_KEYS | {
 }
 SUPPORTED_TYPES = optcbx.SUPPORTED_TYPES
 SUPPORTED_CLASSES = optcbx.SUPPORTED_CLASSES
+IMAGE_SIZE_MIN = 32
+IMAGE_SIZE_MAX = 256
+DEFAULT_IMAGE_SIZE = 64
 
 
 def _init_feedback_connection():
@@ -217,7 +220,6 @@ def feedback():
 def export():
     payload = request.get_json(silent=True) or {}
     b64_image = payload.get("image")
-    im_size = int(payload.get("imageSize", 64))
     return_thumbnails = payload.get("returnThumbnails", False)
 
     try:
@@ -236,6 +238,33 @@ def export():
             "message": str(exc),
             "appliedTypes": list(allowed_types),
             "appliedClasses": [],
+        }, 400
+
+    try:
+        im_size = _parse_image_size(payload)
+    except ValueError as exc:
+        return {
+            "message": str(exc),
+            "appliedTypes": list(allowed_types),
+            "appliedClasses": list(allowed_classes),
+        }, 400
+
+    try:
+        expected_count = _parse_expected_count(payload)
+    except ValueError as exc:
+        return {
+            "message": str(exc),
+            "appliedTypes": list(allowed_types),
+            "appliedClasses": list(allowed_classes),
+        }, 400
+
+    try:
+        characters_per_row = _parse_characters_per_row(payload)
+    except ValueError as exc:
+        return {
+            "message": str(exc),
+            "appliedTypes": list(allowed_types),
+            "appliedClasses": list(allowed_classes),
         }, 400
 
     if not b64_image:
@@ -269,6 +298,7 @@ def export():
                 approach='gradient_based',
                 allowed_types=allowed_types,
                 allowed_classes=allowed_classes,
+                characters_per_row=characters_per_row,
             )
             thumbnails = np.flip(thumbnails, -1)
 
@@ -284,6 +314,8 @@ def export():
                 "thumbnails": [_img_to_b64(o) for o in thumbnails],
                 "appliedTypes": list(allowed_types),
                 "appliedClasses": list(allowed_classes),
+                **_build_count_metadata(expected_count, len(characters)),
+                **_build_row_metadata(characters_per_row, len(characters)),
             }
         else:
             characters = optcbx.find_characters_from_screenshot(
@@ -293,6 +325,7 @@ def export():
                 approach='gradient_based',
                 allowed_types=allowed_types,
                 allowed_classes=allowed_classes,
+                characters_per_row=characters_per_row,
             )
 
             if len(characters) == 0:
@@ -306,6 +339,8 @@ def export():
                 "characters": [dict(o._asdict()) for o in characters],
                 "appliedTypes": list(allowed_types),
                 "appliedClasses": list(allowed_classes),
+                **_build_count_metadata(expected_count, len(characters)),
+                **_build_row_metadata(characters_per_row, len(characters)),
             }
     except FileNotFoundError as exc:
         runtime = _build_runtime_status()
@@ -338,6 +373,155 @@ def _build_no_detection_message(allowed_types, allowed_classes):
     if active_filters:
         return message + " Active filters: " + "; ".join(active_filters) + "."
     return message
+
+
+def _parse_image_size(payload):
+    has_custom_width = "imageWidth" in payload and payload.get("imageWidth") is not None
+    has_custom_height = "imageHeight" in payload and payload.get("imageHeight") is not None
+
+    if has_custom_width or has_custom_height:
+        if not (has_custom_width and has_custom_height):
+            raise ValueError(
+                "Both imageWidth and imageHeight are required when using custom image size."
+            )
+
+        width = _coerce_image_size_value(payload.get("imageWidth"), "imageWidth")
+        height = _coerce_image_size_value(payload.get("imageHeight"), "imageHeight")
+        _validate_image_size_range(width, "imageWidth")
+        _validate_image_size_range(height, "imageHeight")
+        return (width, height)
+
+    size = _coerce_image_size_value(payload.get("imageSize", DEFAULT_IMAGE_SIZE), "imageSize")
+    _validate_image_size_range(size, "imageSize")
+    return size
+
+
+def _coerce_image_size_value(raw_value, field_name):
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{field_name} must be an integer between {IMAGE_SIZE_MIN} and {IMAGE_SIZE_MAX}.")
+
+    if isinstance(raw_value, int):
+        return raw_value
+
+    if isinstance(raw_value, float):
+        if raw_value.is_integer():
+            return int(raw_value)
+        raise ValueError(f"{field_name} must be an integer between {IMAGE_SIZE_MIN} and {IMAGE_SIZE_MAX}.")
+
+    if isinstance(raw_value, str):
+        value = raw_value.strip()
+        if value and value.lstrip("-").isdigit():
+            return int(value)
+        raise ValueError(f"{field_name} must be an integer between {IMAGE_SIZE_MIN} and {IMAGE_SIZE_MAX}.")
+
+    raise ValueError(f"{field_name} must be an integer between {IMAGE_SIZE_MIN} and {IMAGE_SIZE_MAX}.")
+
+
+def _validate_image_size_range(value, field_name):
+    if value < IMAGE_SIZE_MIN or value > IMAGE_SIZE_MAX:
+        raise ValueError(
+            f"{field_name} must be between {IMAGE_SIZE_MIN} and {IMAGE_SIZE_MAX}."
+        )
+
+
+def _parse_expected_count(payload):
+    if "expectedCount" not in payload:
+        return None
+
+    raw_value = payload.get("expectedCount")
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, str) and raw_value.strip() == "":
+        return None
+    if isinstance(raw_value, bool):
+        raise ValueError("expectedCount must be a positive integer.")
+
+    if isinstance(raw_value, int):
+        value = raw_value
+    elif isinstance(raw_value, float):
+        if not raw_value.is_integer():
+            raise ValueError("expectedCount must be a positive integer.")
+        value = int(raw_value)
+    elif isinstance(raw_value, str):
+        value_str = raw_value.strip()
+        if not value_str.lstrip("-").isdigit():
+            raise ValueError("expectedCount must be a positive integer.")
+        value = int(value_str)
+    else:
+        raise ValueError("expectedCount must be a positive integer.")
+
+    if value <= 0:
+        raise ValueError("expectedCount must be a positive integer.")
+
+    return value
+
+
+def _parse_characters_per_row(payload):
+    if "charactersPerRow" not in payload:
+        return None
+
+    raw_value = payload.get("charactersPerRow")
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, str) and raw_value.strip() == "":
+        return None
+    if isinstance(raw_value, bool):
+        raise ValueError("charactersPerRow must be a positive integer.")
+
+    if isinstance(raw_value, int):
+        value = raw_value
+    elif isinstance(raw_value, float):
+        if not raw_value.is_integer():
+            raise ValueError("charactersPerRow must be a positive integer.")
+        value = int(raw_value)
+    elif isinstance(raw_value, str):
+        value_str = raw_value.strip()
+        if not value_str.lstrip("-").isdigit():
+            raise ValueError("charactersPerRow must be a positive integer.")
+        value = int(value_str)
+    else:
+        raise ValueError("charactersPerRow must be a positive integer.")
+
+    if value <= 0:
+        raise ValueError("charactersPerRow must be a positive integer.")
+
+    return value
+
+
+def _build_count_metadata(expected_count, detected_count):
+    count_match = expected_count is None or detected_count == expected_count
+    metadata = {
+        "expectedCount": expected_count,
+        "detectedCount": detected_count,
+        "countMatch": count_match,
+    }
+
+    if expected_count is not None and not count_match:
+        metadata["countWarning"] = (
+            f"Detected {detected_count} characters, but expected {expected_count}. "
+            "Review the screenshot and filters, then retry if needed."
+        )
+
+    return metadata
+
+
+def _build_row_metadata(characters_per_row, detected_count):
+    row_count_match = (
+        characters_per_row is None or
+        detected_count % characters_per_row == 0
+    )
+    metadata = {
+        "charactersPerRow": characters_per_row,
+        "rowCountMatch": row_count_match,
+    }
+
+    if characters_per_row is not None and not row_count_match:
+        metadata["rowCountWarning"] = (
+            f"Detected {detected_count} characters, which is not divisible by "
+            f"charactersPerRow={characters_per_row}. Review the value and retry if needed."
+        )
+
+    return metadata
 
 
 def _img_to_b64(im):

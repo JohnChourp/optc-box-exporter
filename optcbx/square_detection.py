@@ -14,6 +14,7 @@ CHARACTER_TRIM_FRACTIONS = {
     'bottom': 0.12,
     'left': 0.03,
 }
+DEFAULT_CHARACTERS_PER_ROW = 5
 
 
 def select_rgb_white_yellow(image: np.ndarray) -> np.ndarray:
@@ -82,6 +83,7 @@ def detect_characters(image: Union[str, np.ndarray],
                       characters_size: Optional[ImageSize] = None,
                       screen: str = 'character_box',
                       approach: str = 'smart',
+                      characters_per_row: Optional[int] = None,
                       return_rectangles: bool = False) -> DetectResults:
 
     if approach not in {'smart', 'gradient_based'}:
@@ -95,7 +97,8 @@ def detect_characters(image: Union[str, np.ndarray],
 
     if approach == 'gradient_based':
         return _gradient_based_approach(image, characters_size, screen,
-                                        return_rectangles)
+                                        return_rectangles,
+                                        characters_per_row=characters_per_row)
     elif approach == 'smart':
         return _smart_approach(image, characters_size, return_rectangles)
 
@@ -160,7 +163,8 @@ def _smart_approach(image: Union[str, np.ndarray],
 def _gradient_based_approach(image: Union[str, np.ndarray],
                              characters_size: Optional[ImageSize] = None,
                              screen: str = 'character_box',
-                             return_rectangles: bool = False):
+                             return_rectangles: bool = False,
+                             characters_per_row: Optional[int] = None):
 
     if isinstance(characters_size, int):
         characters_size = (characters_size, ) * 2
@@ -249,33 +253,11 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
             [cv2.resize(o, characters_size) for o in characters])
 
         if screen == 'character_box':
-            # We assume a multiple of 5 characters found
-            # (for example: 5, 10, 15,...)
-
-            pad = characters.shape[0] % 5
-            if pad > 0:
-                pad = 5 - pad
-                characters = np.pad(characters,
-                                    ((0, pad), (0, 0), (0, 0), (0, 0)))
-                valid_rects = np.pad(valid_rects, ((0, pad), (0, 0)),
-                                     constant_values=9999)
-
-            sort_by_y_idx = np.argsort(valid_rects[:, 1])
-            characters = characters[sort_by_y_idx]
-            characters = characters.reshape(-1, 5, *characters.shape[1:])
-
-            valid_rects = valid_rects[sort_by_y_idx]
-            valid_rects = valid_rects.reshape(-1, 5, 4)
-
-            sort_by_x_idx = np.argsort(valid_rects[..., 0], axis=1)
-            indexer = np.arange(characters.shape[0]).reshape(-1, 1)
-            characters = characters[indexer, sort_by_x_idx]
-            characters = characters.reshape((-1, *characters.shape[2:]))
-            characters = characters[:characters.shape[0] - pad]
-
-            valid_rects = valid_rects[indexer, sort_by_x_idx]
-            valid_rects = valid_rects.reshape(-1, 4)
-            valid_rects = valid_rects[:valid_rects.shape[0] - pad]
+            characters, valid_rects = _sort_detected_characters_by_grid(
+                characters,
+                valid_rects,
+                characters_per_row=characters_per_row,
+            )
 
     if not return_rectangles:
         return characters
@@ -307,6 +289,53 @@ def _extract_valid_character_crops(image: np.ndarray, rects: np.ndarray):
         characters.append(crop)
 
     return np.asarray(valid_rects, dtype='int32'), characters
+
+
+def _resolve_characters_per_row(characters_per_row: Optional[int]) -> int:
+    if characters_per_row is None:
+        return DEFAULT_CHARACTERS_PER_ROW
+    if isinstance(characters_per_row, bool) or not isinstance(characters_per_row, int):
+        raise ValueError("characters_per_row must be a positive integer.")
+    if characters_per_row <= 0:
+        raise ValueError("characters_per_row must be a positive integer.")
+    return characters_per_row
+
+
+def _sort_detected_characters_by_grid(
+        characters: np.ndarray,
+        valid_rects: np.ndarray,
+        characters_per_row: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+    row_size = _resolve_characters_per_row(characters_per_row)
+
+    if characters.shape[0] == 0:
+        return characters, valid_rects
+
+    pad = characters.shape[0] % row_size
+    if pad > 0:
+        pad = row_size - pad
+        characters = np.pad(characters, ((0, pad), (0, 0), (0, 0), (0, 0)))
+        valid_rects = np.pad(valid_rects, ((0, pad), (0, 0)), constant_values=9999)
+
+    sort_by_y_idx = np.argsort(valid_rects[:, 1])
+    characters = characters[sort_by_y_idx]
+    valid_rects = valid_rects[sort_by_y_idx]
+
+    characters = characters.reshape(-1, row_size, *characters.shape[1:])
+    valid_rects = valid_rects.reshape(-1, row_size, 4)
+
+    sort_by_x_idx = np.argsort(valid_rects[..., 0], axis=1)
+    indexer = np.arange(characters.shape[0]).reshape(-1, 1)
+    characters = characters[indexer, sort_by_x_idx]
+    valid_rects = valid_rects[indexer, sort_by_x_idx]
+
+    characters = characters.reshape((-1, *characters.shape[2:]))
+    valid_rects = valid_rects.reshape(-1, 4)
+
+    if pad > 0:
+        characters = characters[:characters.shape[0] - pad]
+        valid_rects = valid_rects[:valid_rects.shape[0] - pad]
+
+    return characters, valid_rects
 
 
 if __name__ == "__main__":

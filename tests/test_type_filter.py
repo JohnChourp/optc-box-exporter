@@ -213,6 +213,229 @@ class ExportRouteTypeFilterTests(unittest.TestCase):
             (),
         )
 
+    def test_export_accepts_step_one_square_size(self) -> None:
+        runtime = {'web_ready': True}
+        characters = [Character('Dual unit', ['DEX', 'QCK'], ['Driven'], '6', 202)]
+        thumbnails = np.zeros((1, 4, 4, 3), dtype='uint8')
+
+        with patch('optcbx.app_flask._build_runtime_status', return_value=runtime), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot',
+                      return_value=(characters, thumbnails)) as mocked_export:
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 33,
+                'returnThumbnails': True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_export.call_args.args[1], 33)
+
+    def test_export_uses_custom_image_dimensions_when_provided(self) -> None:
+        runtime = {'web_ready': True}
+        characters = [Character('Dual unit', ['DEX', 'QCK'], ['Driven'], '6', 202)]
+        thumbnails = np.zeros((1, 4, 4, 3), dtype='uint8')
+
+        with patch('optcbx.app_flask._build_runtime_status', return_value=runtime), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot',
+                      return_value=(characters, thumbnails)) as mocked_export:
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 64,
+                'imageWidth': 96,
+                'imageHeight': 128,
+                'returnThumbnails': True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_export.call_args.args[1], (96, 128))
+
+    def test_export_passes_characters_per_row_to_matcher(self) -> None:
+        runtime = {'web_ready': True}
+        characters = [Character('Dual unit', ['DEX', 'QCK'], ['Driven'], '6', 202)]
+        thumbnails = np.zeros((1, 4, 4, 3), dtype='uint8')
+
+        with patch('optcbx.app_flask._build_runtime_status', return_value=runtime), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot',
+                      return_value=(characters, thumbnails)) as mocked_export:
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 64,
+                'charactersPerRow': 6,
+                'returnThumbnails': True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['charactersPerRow'], 6)
+        self.assertFalse(payload['rowCountMatch'])
+        self.assertIn('rowCountWarning', payload)
+        self.assertEqual(
+            mocked_export.call_args.kwargs['characters_per_row'],
+            6,
+        )
+
+    def test_export_rejects_out_of_range_image_size(self) -> None:
+        response = self.client.post('/export', json={
+            'image': self.image_b64,
+            'imageSize': 257,
+            'returnThumbnails': True,
+        })
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertIn('imageSize must be between 32 and 256.', payload['message'])
+
+    def test_export_rejects_non_integer_custom_dimensions(self) -> None:
+        response = self.client.post('/export', json={
+            'image': self.image_b64,
+            'imageWidth': 96.5,
+            'imageHeight': 128,
+            'returnThumbnails': True,
+        })
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertIn('imageWidth must be an integer between 32 and 256.', payload['message'])
+
+    def test_export_includes_count_metadata_without_expected_count(self) -> None:
+        runtime = {'web_ready': True}
+        characters = [Character('Dual unit', ['DEX', 'QCK'], ['Driven'], '6', 202)]
+        thumbnails = np.zeros((1, 4, 4, 3), dtype='uint8')
+
+        with patch('optcbx.app_flask._build_runtime_status', return_value=runtime), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot',
+                      return_value=(characters, thumbnails)):
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 64,
+                'returnThumbnails': True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIsNone(payload['expectedCount'])
+        self.assertEqual(payload['detectedCount'], 1)
+        self.assertTrue(payload['countMatch'])
+        self.assertNotIn('countWarning', payload)
+
+    def test_export_includes_match_metadata_when_expected_count_matches(self) -> None:
+        runtime = {'web_ready': True}
+        characters = [Character('Dual unit', ['DEX', 'QCK'], ['Driven'], '6', 202)]
+        thumbnails = np.zeros((1, 4, 4, 3), dtype='uint8')
+
+        with patch('optcbx.app_flask._build_runtime_status', return_value=runtime), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot',
+                      return_value=(characters, thumbnails)):
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 64,
+                'expectedCount': 1,
+                'returnThumbnails': True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['expectedCount'], 1)
+        self.assertEqual(payload['detectedCount'], 1)
+        self.assertTrue(payload['countMatch'])
+        self.assertNotIn('countWarning', payload)
+
+    def test_export_includes_warning_metadata_when_expected_count_mismatches(self) -> None:
+        runtime = {'web_ready': True}
+        characters = [Character('Dual unit', ['DEX', 'QCK'], ['Driven'], '6', 202)]
+        thumbnails = np.zeros((1, 4, 4, 3), dtype='uint8')
+
+        with patch('optcbx.app_flask._build_runtime_status', return_value=runtime), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot',
+                      return_value=(characters, thumbnails)):
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 64,
+                'expectedCount': 2,
+                'returnThumbnails': True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['expectedCount'], 2)
+        self.assertEqual(payload['detectedCount'], 1)
+        self.assertFalse(payload['countMatch'])
+        self.assertIn('countWarning', payload)
+        self.assertIn('Detected 1 characters, but expected 2.', payload['countWarning'])
+
+    def test_export_rejects_expected_count_when_not_positive_integer(self) -> None:
+        response = self.client.post('/export', json={
+            'image': self.image_b64,
+            'imageSize': 64,
+            'expectedCount': 0,
+            'returnThumbnails': True,
+        })
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertIn('expectedCount must be a positive integer.', payload['message'])
+
+    def test_export_rejects_expected_count_when_not_integer(self) -> None:
+        response = self.client.post('/export', json={
+            'image': self.image_b64,
+            'imageSize': 64,
+            'expectedCount': 96.5,
+            'returnThumbnails': True,
+        })
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertIn('expectedCount must be a positive integer.', payload['message'])
+
+    def test_export_rejects_expected_count_when_not_numeric_string(self) -> None:
+        response = self.client.post('/export', json={
+            'image': self.image_b64,
+            'imageSize': 64,
+            'expectedCount': 'abc',
+            'returnThumbnails': True,
+        })
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertIn('expectedCount must be a positive integer.', payload['message'])
+
+    def test_export_rejects_characters_per_row_when_not_positive_integer(self) -> None:
+        invalid_values = [0, 96.5, 'abc', True]
+
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                response = self.client.post('/export', json={
+                    'image': self.image_b64,
+                    'imageSize': 64,
+                    'charactersPerRow': invalid_value,
+                    'returnThumbnails': True,
+                })
+
+                self.assertEqual(response.status_code, 400)
+                payload = response.get_json()
+                self.assertIn('charactersPerRow must be a positive integer.', payload['message'])
+
+    def test_export_includes_row_match_metadata_when_divisible(self) -> None:
+        runtime = {'web_ready': True}
+        characters = [Character('Dual unit', ['DEX', 'QCK'], ['Driven'], '6', 202)]
+        thumbnails = np.zeros((1, 4, 4, 3), dtype='uint8')
+
+        with patch('optcbx.app_flask._build_runtime_status', return_value=runtime), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot',
+                      return_value=(characters, thumbnails)):
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 64,
+                'charactersPerRow': 1,
+                'returnThumbnails': True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['charactersPerRow'], 1)
+        self.assertTrue(payload['rowCountMatch'])
+        self.assertNotIn('rowCountWarning', payload)
+
     def test_export_passes_normalized_classes_to_matcher(self) -> None:
         runtime = {'web_ready': True}
         characters = [Character('Fighter unit', 'STR', ['Fighter'], '6', 101)]

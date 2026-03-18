@@ -2,8 +2,9 @@ import base64
 import html
 import io
 import json
+import re
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Union
 
 import click
 import numpy as np
@@ -13,8 +14,12 @@ import optcbx
 from optcbx.units import Character, parse_units
 
 CASE_IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp'}
-EXPECTED_FILE_NAME = 'expected.json'
+INPUT_DIR_NAME = 'input'
+OUTPUT_DIR_NAME = 'output'
+META_DIR_NAME = 'meta'
+CORRECTED_FILE_NAME = 'corrected.json'
 NOTES_FILE_NAME = 'notes.txt'
+FAVORITES_GLOB_PATTERNS = ('optcbx-favorites-*.json', 'favorites*.json')
 
 
 @click.command('audit-case')
@@ -26,7 +31,7 @@ def main(case_folder: Path,
          image_size: int,
          write_artifacts: bool,
          fail_on_mismatch: bool) -> None:
-    """Run OPTCbx against a case folder with source screenshot + expected.json."""
+    """Run OPTCbx against a strict case folder with input/output/meta layout."""
     report = run_audit_case(case_folder, image_size=image_size, write_artifacts=write_artifacts)
     click.echo(json.dumps(report, indent=2))
 
@@ -38,61 +43,100 @@ def run_audit_case(case_folder: Path,
                    image_size: int = 64,
                    write_artifacts: bool = True) -> Dict[str, Any]:
     case_context = load_case_context(case_folder)
-    screenshot = _load_screenshot(case_context['imagePath'])
+    screenshot = _load_screenshot(case_context['inputImagePath'])
     units_by_id = _load_units_by_id()
 
-    match_result = optcbx.find_characters_from_screenshot(
+    current_match_result = optcbx.find_characters_from_screenshot(
         screenshot,
         image_size=image_size,
         return_thumbnails=True,
         return_diagnostics=True,
         approach='gradient_based',
     )
-    actual_characters, thumbnails, diagnostics = match_result
-    export_payload = build_actual_export_payload(case_context['caseId'], image_size, actual_characters)
-    report = build_audit_report(case_context, actual_characters, diagnostics, units_by_id)
+    current_characters, current_thumbnails, current_diagnostics = current_match_result
+    current_character_entries = [_character_to_entry(character) for character in current_characters]
+
+    provided_crops = _load_provided_output_crops(case_context['outputImagePaths'], image_size=image_size)
+    provided_ids, provided_diagnostics = optcbx.find_characters_ids(
+        provided_crops,
+        return_diagnostics=True,
+    )
+    provided_character_entries = [
+        _character_entry_from_id(character_id, units_by_id)
+        for character_id in provided_ids
+    ]
+
+    current_track = build_track_report(
+        expected_entries=case_context['expectedCharacters'],
+        actual_entries=current_character_entries,
+        diagnostics=current_diagnostics,
+        units_by_id=units_by_id,
+    )
+    provided_track = build_track_report(
+        expected_entries=case_context['expectedCharacters'],
+        actual_entries=provided_character_entries,
+        diagnostics=provided_diagnostics,
+        units_by_id=units_by_id,
+    )
+
+    favorites_checks = build_favorites_consistency_checks(
+        expected_entries=case_context['expectedCharacters'],
+        favorites_entries=case_context['favoritesCharacters'],
+        favorites_path=case_context['favoritesPath'],
+    )
+
+    report = build_audit_report(
+        case_context=case_context,
+        current_track=current_track,
+        provided_track=provided_track,
+        favorites_checks=favorites_checks,
+    )
+
+    current_export_payload = build_export_payload(
+        case_id=case_context['caseId'],
+        image_size=image_size,
+        source='current_rerun',
+        characters=current_character_entries,
+    )
+    provided_export_payload = build_export_payload(
+        case_id=case_context['caseId'],
+        image_size=image_size,
+        source='provided_output_baseline',
+        characters=provided_character_entries,
+    )
 
     if write_artifacts:
-        write_case_artifacts(case_context['caseFolder'], export_payload, report, thumbnails)
+        write_case_artifacts(
+            case_folder=case_context['caseFolder'],
+            current_export_payload=current_export_payload,
+            provided_export_payload=provided_export_payload,
+            report=report,
+            current_thumbnails=current_thumbnails,
+            provided_thumbnails=provided_crops,
+        )
 
     return report
 
 
 def load_case_context(case_folder: Path) -> Dict[str, Any]:
-    image_path = discover_case_image(case_folder)
-    expected_path = case_folder / EXPECTED_FILE_NAME
+    input_dir = _require_case_subdir(case_folder, INPUT_DIR_NAME)
+    output_dir = _require_case_subdir(case_folder, OUTPUT_DIR_NAME)
+    meta_dir = _require_case_subdir(case_folder, META_DIR_NAME)
 
-    if not expected_path.exists():
-        raise FileNotFoundError(f"Missing {EXPECTED_FILE_NAME} in {case_folder}")
+    input_image_path = discover_single_input_image(input_dir)
+    output_image_paths = discover_output_images(output_dir)
+    corrected_path = meta_dir / CORRECTED_FILE_NAME
 
-    raw_payload = json.loads(expected_path.read_text())
+    if not corrected_path.exists():
+        raise FileNotFoundError(f"Missing {META_DIR_NAME}/{CORRECTED_FILE_NAME} in {case_folder}")
+
+    raw_payload = json.loads(corrected_path.read_text())
     if not isinstance(raw_payload, dict):
-        raise ValueError(f"{EXPECTED_FILE_NAME} must contain a JSON object.")
+        raise ValueError(f"{META_DIR_NAME}/{CORRECTED_FILE_NAME} must contain a JSON object.")
 
-    raw_characters = raw_payload.get('characters')
-    if not isinstance(raw_characters, list) or len(raw_characters) == 0:
-        raise ValueError(f"{EXPECTED_FILE_NAME} must contain a non-empty characters array.")
+    expected_characters = _parse_expected_characters(raw_payload, file_label=CORRECTED_FILE_NAME)
 
-    characters = []
-    for index, entry in enumerate(raw_characters, start=1):
-        if not isinstance(entry, dict):
-            raise ValueError(f"Character entry {index} in {EXPECTED_FILE_NAME} must be an object.")
-
-        number = entry.get('number')
-        name = entry.get('name')
-
-        if not isinstance(number, int) or number <= 0:
-            raise ValueError(f"Character entry {index} is missing a valid positive integer number.")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"Character entry {index} is missing a valid name.")
-
-        characters.append({
-            'number': number,
-            'name': name.strip(),
-            'position': index - 1,
-        })
-
-    notes_path = case_folder / NOTES_FILE_NAME
+    notes_path = meta_dir / NOTES_FILE_NAME
     notes = raw_payload.get('notes')
     if notes_path.exists() and (not isinstance(notes, str) or not notes.strip()):
         notes = notes_path.read_text().strip()
@@ -101,52 +145,191 @@ def load_case_context(case_folder: Path) -> Dict[str, Any]:
     if not isinstance(case_id, str) or not case_id.strip():
         case_id = case_folder.name
 
+    favorites_path = discover_latest_favorites_json(meta_dir)
+    favorites_characters = load_favorites_characters(favorites_path) if favorites_path else []
+
     return {
         'caseFolder': case_folder,
         'caseId': case_id.strip(),
-        'imagePath': image_path,
+        'inputImagePath': input_image_path,
+        'outputImagePaths': output_image_paths,
+        'correctedPath': corrected_path,
+        'favoritesPath': favorites_path,
         'notes': notes.strip() if isinstance(notes, str) and notes.strip() else '',
-        'expectedCharacters': characters,
+        'expectedCharacters': expected_characters,
+        'favoritesCharacters': favorites_characters,
     }
 
 
-def discover_case_image(case_folder: Path) -> Path:
+def _require_case_subdir(case_folder: Path, folder_name: str) -> Path:
+    subdir = case_folder / folder_name
+    if not subdir.is_dir():
+        raise FileNotFoundError(f"Missing required directory: {subdir}")
+    return subdir
+
+
+def discover_single_input_image(input_dir: Path) -> Path:
     image_paths = sorted([
-        path for path in case_folder.iterdir()
+        path for path in input_dir.iterdir()
         if path.is_file() and path.suffix.lower() in CASE_IMAGE_SUFFIXES
     ])
 
     if len(image_paths) != 1:
         raise ValueError(
-            f"Expected exactly one screenshot image in {case_folder}, found {len(image_paths)}."
+            f"Expected exactly one input screenshot image in {input_dir}, found {len(image_paths)}."
         )
 
     return image_paths[0]
 
 
-def build_actual_export_payload(case_id: str,
-                                image_size: int,
-                                characters: List[Character]) -> Dict[str, Any]:
+def discover_output_images(output_dir: Path) -> List[Path]:
+    image_paths = [
+        path for path in output_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in CASE_IMAGE_SUFFIXES
+    ]
+
+    if not image_paths:
+        raise ValueError(f"Expected at least one output character image in {output_dir}, found 0.")
+
+    return sorted(image_paths, key=_natural_sort_key)
+
+
+def _natural_sort_key(path: Path) -> List[Union[int, str]]:
+    parts = re.split(r'(\d+)', path.name.casefold())
+    key: List[Union[int, str]] = []
+    for part in parts:
+        if part.isdigit():
+            key.append(int(part))
+        else:
+            key.append(part)
+    return key
+
+
+def _parse_expected_characters(raw_payload: Dict[str, Any], file_label: str) -> List[Dict[str, Any]]:
+    raw_characters = raw_payload.get('characters')
+    if not isinstance(raw_characters, list) or len(raw_characters) == 0:
+        raise ValueError(f"{META_DIR_NAME}/{file_label} must contain a non-empty characters array.")
+
+    characters = []
+    for index, entry in enumerate(raw_characters, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Character entry {index} in {META_DIR_NAME}/{file_label} must be an object."
+            )
+
+        number = entry.get('number')
+        name = entry.get('name')
+
+        if not isinstance(number, int) or number <= 0:
+            raise ValueError(
+                f"Character entry {index} in {META_DIR_NAME}/{file_label} "
+                "is missing a valid positive integer number."
+            )
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                f"Character entry {index} in {META_DIR_NAME}/{file_label} is missing a valid name."
+            )
+
+        characters.append({
+            'number': number,
+            'name': name.strip(),
+            'position': index - 1,
+        })
+
+    return characters
+
+
+def discover_latest_favorites_json(meta_dir: Path) -> Optional[Path]:
+    candidates: Dict[Path, None] = {}
+    for pattern in FAVORITES_GLOB_PATTERNS:
+        for path in meta_dir.glob(pattern):
+            if path.is_file() and path.name != CORRECTED_FILE_NAME:
+                candidates[path] = None
+
+    if not candidates:
+        return None
+
+    return max(candidates.keys(), key=lambda path: (path.stat().st_mtime, path.name))
+
+
+def load_favorites_characters(favorites_path: Path) -> List[Dict[str, Any]]:
+    raw_payload = json.loads(favorites_path.read_text())
+    if not isinstance(raw_payload, dict):
+        raise ValueError(f"{favorites_path} must contain a JSON object.")
+
+    raw_characters = raw_payload.get('characters')
+    if not isinstance(raw_characters, list):
+        raise ValueError(f"{favorites_path} must contain a characters array.")
+
+    characters = []
+    for index, entry in enumerate(raw_characters, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Character entry {index} in {favorites_path.name} must be an object.")
+
+        number = entry.get('number')
+        if not isinstance(number, int) or number <= 0:
+            raise ValueError(
+                f"Character entry {index} in {favorites_path.name} has invalid number: {number}."
+            )
+
+        name = entry.get('name')
+        characters.append({
+            'number': number,
+            'name': name.strip() if isinstance(name, str) else '',
+        })
+
+    return characters
+
+
+def build_export_payload(case_id: str,
+                        image_size: int,
+                        source: str,
+                        characters: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         'caseId': case_id,
         'imageSize': image_size,
-        'characters': [dict(character._asdict()) for character in characters],
+        'source': source,
+        'characters': [dict(character) for character in characters],
     }
 
 
-def build_audit_report(case_context: Dict[str, Any],
-                       actual_characters: List[Character],
+def _character_to_entry(character: Character) -> Dict[str, Any]:
+    return {
+        'name': character.name,
+        'type_': character.type_,
+        'class_': character.class_,
+        'stars': character.stars,
+        'number': character.number,
+    }
+
+
+def _character_entry_from_id(character_id: int,
+                             units_by_id: Dict[int, Character]) -> Dict[str, Any]:
+    character = units_by_id.get(character_id)
+    if character is None:
+        return {
+            'name': '',
+            'type_': '',
+            'class_': [],
+            'stars': '',
+            'number': character_id,
+        }
+
+    return _character_to_entry(character)
+
+
+def build_track_report(expected_entries: List[Dict[str, Any]],
+                       actual_entries: List[Dict[str, Any]],
                        diagnostics: List[Dict[str, Any]],
                        units_by_id: Dict[int, Character]) -> Dict[str, Any]:
-    expected = case_context['expectedCharacters']
     comparisons = []
     mismatch_categories = set()
     matched_count = 0
 
-    total = max(len(expected), len(actual_characters))
+    total = max(len(expected_entries), len(actual_entries))
     for index in range(total):
-        expected_entry = expected[index] if index < len(expected) else None
-        actual_entry = actual_characters[index] if index < len(actual_characters) else None
+        expected_entry = expected_entries[index] if index < len(expected_entries) else None
+        actual_entry = actual_entries[index] if index < len(actual_entries) else None
         diagnostic_entry = diagnostics[index] if index < len(diagnostics) else None
 
         comparison = build_comparison_entry(index, expected_entry, actual_entry, diagnostic_entry, units_by_id)
@@ -158,15 +341,12 @@ def build_audit_report(case_context: Dict[str, Any],
 
         mismatch_categories.add(comparison['mismatchCategory'])
 
-    summary_status = 'exact_match' if not mismatch_categories else 'mismatch'
+    status = 'exact_match' if not mismatch_categories else 'mismatch'
     return {
-        'caseId': case_context['caseId'],
-        'imagePath': str(case_context['imagePath']),
-        'notes': case_context['notes'],
         'summary': {
-            'status': summary_status,
-            'expectedCount': len(expected),
-            'actualCount': len(actual_characters),
+            'status': status,
+            'expectedCount': len(expected_entries),
+            'actualCount': len(actual_entries),
             'matchedCount': matched_count,
             'mismatchCount': total - matched_count,
             'mismatchCategories': sorted(mismatch_categories),
@@ -175,21 +355,82 @@ def build_audit_report(case_context: Dict[str, Any],
     }
 
 
+def build_audit_report(case_context: Dict[str, Any],
+                       current_track: Dict[str, Any],
+                       provided_track: Dict[str, Any],
+                       favorites_checks: Dict[str, Any]) -> Dict[str, Any]:
+    current_summary = current_track['summary']
+    provided_summary = provided_track['summary']
+
+    return {
+        'caseId': case_context['caseId'],
+        'inputImagePath': str(case_context['inputImagePath']),
+        'providedOutputImagePaths': [str(path) for path in case_context['outputImagePaths']],
+        'correctedPath': str(case_context['correctedPath']),
+        'favoritesPath': str(case_context['favoritesPath']) if case_context['favoritesPath'] else None,
+        'notes': case_context['notes'],
+        'summary': {
+            'status': current_summary['status'],
+            'currentStatus': current_summary['status'],
+            'providedStatus': provided_summary['status'],
+            'currentMismatchCategories': current_summary['mismatchCategories'],
+            'providedMismatchCategories': provided_summary['mismatchCategories'],
+        },
+        'current': current_track,
+        'provided': provided_track,
+        'favoritesChecks': favorites_checks,
+    }
+
+
+def build_favorites_consistency_checks(expected_entries: List[Dict[str, Any]],
+                                       favorites_entries: List[Dict[str, Any]],
+                                       favorites_path: Optional[Path]) -> Dict[str, Any]:
+    if favorites_path is None:
+        return {
+            'status': 'not_provided',
+            'path': None,
+            'favoritesUniqueCount': 0,
+            'expectedUniqueCount': len({entry['number'] for entry in expected_entries}),
+            'missingFromFavorites': [],
+            'extraInFavorites': [],
+        }
+
+    expected_set = {entry['number'] for entry in expected_entries}
+    favorites_set = {entry['number'] for entry in favorites_entries}
+
+    missing_from_favorites = sorted(expected_set - favorites_set)
+    extra_in_favorites = sorted(favorites_set - expected_set)
+
+    status = 'consistent' if not missing_from_favorites and not extra_in_favorites else 'mismatch'
+
+    return {
+        'status': status,
+        'path': str(favorites_path),
+        'favoritesUniqueCount': len(favorites_set),
+        'expectedUniqueCount': len(expected_set),
+        'missingFromFavorites': missing_from_favorites,
+        'extraInFavorites': extra_in_favorites,
+    }
+
+
 def build_comparison_entry(index: int,
                            expected_entry: Dict[str, Any],
-                           actual_entry: Character,
+                           actual_entry: Dict[str, Any],
                            diagnostic_entry: Dict[str, Any],
                            units_by_id: Dict[int, Character]) -> Dict[str, Any]:
-    if expected_entry and actual_entry and expected_entry['number'] == actual_entry.number:
+    expected_number = expected_entry['number'] if expected_entry else None
+    actual_number = actual_entry['number'] if actual_entry else None
+
+    if expected_entry and actual_entry and expected_number == actual_number:
         status = 'matched'
         mismatch_category = None
     elif expected_entry is None or actual_entry is None:
         status = 'mismatch'
         mismatch_category = 'detection_count_mismatch'
-    elif expected_entry['number'] not in units_by_id:
+    elif expected_number not in units_by_id:
         status = 'mismatch'
         mismatch_category = 'expected_id_missing_from_local_units'
-    elif not (Path('data/Portraits') / f"{expected_entry['number']}.png").exists():
+    elif not (Path('data/Portraits') / f"{expected_number}.png").exists():
         status = 'mismatch'
         mismatch_category = 'missing_portrait_asset'
     else:
@@ -211,27 +452,46 @@ def build_comparison_entry(index: int,
         'status': status,
         'mismatchCategory': mismatch_category,
         'expected': expected_entry,
-        'actual': dict(actual_entry._asdict()) if actual_entry else None,
+        'actual': actual_entry,
         'topCandidates': top_candidates,
     }
 
 
 def write_case_artifacts(case_folder: Path,
-                         export_payload: Dict[str, Any],
+                         current_export_payload: Dict[str, Any],
+                         provided_export_payload: Dict[str, Any],
                          report: Dict[str, Any],
-                         thumbnails: np.ndarray) -> None:
-    export_path = case_folder / 'actual-export.json'
+                         current_thumbnails: np.ndarray,
+                         provided_thumbnails: np.ndarray) -> None:
+    current_export_path = case_folder / 'actual-export.json'
+    provided_export_path = case_folder / 'provided-export.json'
     report_path = case_folder / 'audit-report.json'
-    html_path = case_folder / 'actual-grid.html'
+    current_html_path = case_folder / 'actual-grid.html'
+    provided_html_path = case_folder / 'provided-grid.html'
 
-    export_path.write_text(json.dumps(export_payload, indent=2) + '\n')
+    current_export_path.write_text(json.dumps(current_export_payload, indent=2) + '\n')
+    provided_export_path.write_text(json.dumps(provided_export_payload, indent=2) + '\n')
     report_path.write_text(json.dumps(report, indent=2) + '\n')
-    html_path.write_text(render_actual_grid_html(report, thumbnails))
+    current_html_path.write_text(render_grid_html(
+        case_id=report['caseId'],
+        track_label='Current rerun from input screenshot',
+        track_data=report['current'],
+        thumbnails=current_thumbnails,
+    ))
+    provided_html_path.write_text(render_grid_html(
+        case_id=report['caseId'],
+        track_label='Provided output images baseline',
+        track_data=report['provided'],
+        thumbnails=provided_thumbnails,
+    ))
 
 
-def render_actual_grid_html(report: Dict[str, Any], thumbnails: np.ndarray) -> str:
+def render_grid_html(case_id: str,
+                     track_label: str,
+                     track_data: Dict[str, Any],
+                     thumbnails: np.ndarray) -> str:
     cards = []
-    comparisons = report['comparisons']
+    comparisons = track_data['comparisons']
 
     for index, comparison in enumerate(comparisons):
         actual = comparison.get('actual')
@@ -265,12 +525,12 @@ def render_actual_grid_html(report: Dict[str, Any], thumbnails: np.ndarray) -> s
             f'</article>'
         )
 
-    categories = ', '.join(report['summary']['mismatchCategories']) or 'none'
+    mismatch_categories = ', '.join(track_data['summary']['mismatchCategories']) or 'none'
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang=\"en\">
 <head>
-  <meta charset="utf-8">
-  <title>OPTCbx Audit - {html.escape(report['caseId'])}</title>
+  <meta charset=\"utf-8\">
+  <title>OPTCbx Audit - {html.escape(case_id)} - {html.escape(track_label)}</title>
   <style>
     body {{
       margin: 0;
@@ -365,13 +625,14 @@ def render_actual_grid_html(report: Dict[str, Any], thumbnails: np.ndarray) -> s
   </style>
 </head>
 <body>
-  <section class="summary">
-    <strong>{html.escape(report['caseId'])}</strong>
-    <span>Status: {report['summary']['status']}</span>
-    <span>Expected: {report['summary']['expectedCount']} | Actual: {report['summary']['actualCount']} | Matched: {report['summary']['matchedCount']}</span>
-    <span>Mismatch categories: {categories}</span>
+  <section class=\"summary\">
+    <strong>{html.escape(case_id)}</strong>
+    <span>Track: {html.escape(track_label)}</span>
+    <span>Status: {track_data['summary']['status']}</span>
+    <span>Expected: {track_data['summary']['expectedCount']} | Actual: {track_data['summary']['actualCount']} | Matched: {track_data['summary']['matchedCount']}</span>
+    <span>Mismatch categories: {mismatch_categories}</span>
   </section>
-  <section class="grid">
+  <section class=\"grid\">
     {''.join(cards)}
   </section>
 </body>
@@ -390,6 +651,23 @@ def _load_screenshot(image_path: Path) -> np.ndarray:
     with Image.open(image_path) as image:
         rgb = image.convert('RGB')
     return np.flip(np.array(rgb), -1).copy()
+
+
+def _load_provided_output_crops(output_image_paths: List[Path], image_size: int) -> np.ndarray:
+    if image_size <= 0:
+        raise ValueError('image_size must be a positive integer.')
+
+    resample = Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS
+    thumbnails = []
+
+    for image_path in output_image_paths:
+        with Image.open(image_path) as image:
+            rgb = image.convert('RGB')
+            if rgb.size != (image_size, image_size):
+                rgb = rgb.resize((image_size, image_size), resample=resample)
+        thumbnails.append(np.flip(np.array(rgb), -1).copy())
+
+    return np.stack(thumbnails, axis=0)
 
 
 def _load_units_by_id() -> Dict[int, Character]:

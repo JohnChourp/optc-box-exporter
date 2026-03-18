@@ -112,7 +112,8 @@ def find_characters_from_screenshot(
         return_diagnostics: bool = False,
         approach: str = 'smart',
         allowed_types: Optional[Sequence[str]] = None,
-        allowed_classes: Optional[Sequence[str]] = None) -> Union[
+        allowed_classes: Optional[Sequence[str]] = None,
+        characters_per_row: Optional[int] = None) -> Union[
             List[Character],
             Tuple[List[Character], np.ndarray],
             Tuple[List[Character], List[Dict[str, Any]]],
@@ -122,7 +123,12 @@ def find_characters_from_screenshot(
     if isinstance(image_size, int):
         image_size = (image_size,) * 2
 
-    characters = detect_characters(screenshot, image_size, approach=approach)
+    characters = detect_characters(
+        screenshot,
+        image_size,
+        approach=approach,
+        characters_per_row=characters_per_row,
+    )
     match_result = find_characters_ids(
         characters,
         dist_method=dist_method,

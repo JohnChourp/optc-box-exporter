@@ -122,6 +122,45 @@ matching, which usually makes exports faster and more accurate when you already
 know the type/class mix in the screenshot. When both filters are active, a
 portrait must satisfy both groups.
 
+### Image size controls
+
+In the browser export UI, **Image Size** is the resolution used for each
+detected character crop before matching against the portrait database.
+
+- Higher values can improve matching quality in some screenshots.
+- Higher values also increase computation time and memory usage.
+
+Available sizing modes:
+
+- **Square (NxN)** via slider: from `32x32` to `256x256` with step `1`
+  (for example `33x33`, `34x34`, etc.).
+- **Custom (Width x Height)** via numeric fields: independent width and
+  height, each between `32` and `256`.
+
+API behavior for `POST /export`:
+
+- Legacy `imageSize` (single number) is still supported.
+- Optional `imageWidth` + `imageHeight` can be provided for custom sizing.
+- When both `imageWidth` and `imageHeight` are present, they take precedence
+  over `imageSize`.
+- Optional `expectedCount` can be provided as a positive integer.
+  When present, export compares detected characters against this value.
+  A mismatch returns a warning in the success response (it does **not** fail the export).
+- Optional `charactersPerRow` can be provided as a positive integer.
+  When present, export uses this row size to sort detected crops before matching.
+  This can improve ordering/matching on screenshots that do not follow the default `5` per row layout.
+
+`POST /export` response now also includes:
+
+- `expectedCount`: provided expected value or `null` when not set.
+- `detectedCount`: total detected/matched characters returned.
+- `countMatch`: `true` when counts match (or when `expectedCount` is not set).
+- `countWarning`: present only when `expectedCount` is set and counts differ.
+- `charactersPerRow`: provided row-size value or `null` when not set.
+- `rowCountMatch`: `true` when `detectedCount` is divisible by `charactersPerRow`
+  (or when `charactersPerRow` is not set).
+- `rowCountWarning`: present only when `charactersPerRow` is set and divisibility check fails.
+
 Known upstream unresolved portrait IDs are currently:
 
 ```text
@@ -143,6 +182,92 @@ sh ./ai/prepare-ai.sh
 ```
 
 > Note: If OpenCV shows warnings regarding png files, run `fix.bat` inside `tools`.
+
+## Training skill (audit/fix loop)
+
+When people refer to the "training skill" in this repository, they usually mean
+the Codex skill `optc-box-audit-loop`. This is an **audit/fix loop**, not
+neural network retraining.
+
+Use it when you want an iterative workflow from chat-shared assets:
+
+- first image = screenshot input
+- second, third, and all remaining images = ordered output character images
+- latest `Download favorites JSON` file
+- corrected JSON with the order that should be considered canonical
+
+The audit command now expects a strict case folder layout:
+
+```text
+<case-folder>/
+  input/
+    <exactly-one-screenshot>.png|jpg|jpeg|webp
+  output/
+    <one-or-more-output-character-images>.png|jpg|jpeg|webp
+  meta/
+    corrected.json
+    optcbx-favorites-*.json or favorites*.json (optional, newest file auto-detected)
+    notes.txt (optional)
+```
+
+Important ordering rule:
+
+- `output/` images are ordered by **natural filename order** (for example
+  `slot-1.png`, `slot-2.png`, `slot-10.png`).
+- This order is treated as row-major expected order (left-to-right, top-to-bottom).
+
+Practical staging flow from chat attachments:
+
+1. Put the first image in `input/`.
+2. Put every next result image in `output/`.
+3. Put the corrected canonical JSON in `meta/corrected.json`.
+4. Put the downloaded favorites file in `meta/` without renaming if you want.
+5. Before each new run, clear old images in `output/` so stale files are not reused.
+
+Run it with the skill helper:
+
+```bash
+~/.codex/skills/optc-box-audit-loop/scripts/run.sh "<case-folder>" [image-size]
+```
+
+Equivalent direct CLI command:
+
+```bash
+python -m optcbx audit-case "<case-folder>" --image-size 64 --write-artifacts
+```
+
+Generated artifacts (written in the same case folder):
+
+- `actual-export.json`
+- `actual-grid.html`
+- `provided-export.json`
+- `provided-grid.html`
+- `audit-report.json`
+
+Artifact meaning:
+
+- `actual-*`: current rerun from `input/` using current repository code.
+- `provided-*`: baseline matching of the already provided `output/` images.
+- `audit-report.json`: combined report with:
+  - `summary.status` based on `current` track only (main pass/fail signal)
+  - `current` vs expected comparison
+  - `provided` vs expected comparison
+  - `favoritesChecks` (set-level consistency, not canonical ordering)
+
+Practical loop:
+
+1. Run audit on the case folder.
+2. Inspect `audit-report.json`, `actual-grid.html`, and `provided-grid.html`.
+3. Patch matcher/crop logic in this repo.
+4. Rerun the same case until `summary.status` is `exact_match`.
+
+Hard blockers to treat as data issues (not matcher code bugs):
+
+- `expected_id_missing_from_local_units`
+- `missing_portrait_asset`
+
+For real model training (SSD / feature extractor), see `notebooks/` and
+`ai/prepare-ai.sh`.
 
 ## How it works (Advanced users)
 

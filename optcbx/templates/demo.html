@@ -46,16 +46,99 @@
 <h4>Image Size</h4>
 <div class="slidecontainer">
   <p>
-    Pick an image size. Larger values can improve matching quality, but they also take longer.
+    Image size is the per-character crop resolution used before matching.
+    Larger values can improve quality, but they also take longer.
   </p>
   <p class="alert alert-warning">
-    Sizes larger than 100 are not recommended due to their high computational cost.
+    Higher resolutions increase runtime. Start with 64x64 and increase only when needed.
   </p>
+  <div class="form-check">
+    <input class="form-check-input"
+      type="radio"
+      name="image-size-mode"
+      id="image-size-mode-square"
+      value="square"
+      checked>
+    <label class="form-check-label" for="image-size-mode-square">
+      Square (NxN)
+    </label>
+  </div>
+  <div class="form-check">
+    <input class="form-check-input"
+      type="radio"
+      name="image-size-mode"
+      id="image-size-mode-custom"
+      value="custom">
+    <label class="form-check-label" for="image-size-mode-custom">
+      Custom (Width x Height)
+    </label>
+  </div>
+
   <code class="slider-disp">
     Image Size: 64x64
   </code>
-  <input type="range" min="32" max="128" step="32" value="64" class="slider" 
-    id="image-size-slider">
+  <div id="image-size-square-controls">
+    <input type="range" min="32" max="256" step="1" value="64" class="slider"
+      id="image-size-slider">
+  </div>
+  <div id="image-size-custom-controls" class="mt-3 d-none">
+    <div class="form-row">
+      <div class="form-group col-md-6">
+        <label for="image-width-input">Width</label>
+        <input type="number"
+          class="form-control"
+          id="image-width-input"
+          min="32"
+          max="256"
+          step="1"
+          value="64">
+      </div>
+      <div class="form-group col-md-6">
+        <label for="image-height-input">Height</label>
+        <input type="number"
+          class="form-control"
+          id="image-height-input"
+          min="32"
+          max="256"
+          step="1"
+          value="64">
+      </div>
+    </div>
+    <small class="text-muted">Allowed range per side: 32 to 256.</small>
+  </div>
+</div>
+
+<div class="mt-4">
+  <h4>Expected Characters (Optional)</h4>
+  <div class="form-group mb-2">
+    <label for="expected-count-input">Expected characters</label>
+    <input type="number"
+      class="form-control"
+      id="expected-count-input"
+      min="1"
+      step="1"
+      placeholder="e.g. 30">
+  </div>
+  <small class="text-muted">
+    If provided, export will compare detected count to this value and show a warning when they differ.
+  </small>
+</div>
+
+<div class="mt-4">
+  <h4>Characters Per Row (Optional)</h4>
+  <div class="form-group mb-2">
+    <label for="characters-per-row-input">Characters per row</label>
+    <input type="number"
+      class="form-control"
+      id="characters-per-row-input"
+      min="1"
+      step="1"
+      placeholder="e.g. 5">
+  </div>
+  <small class="text-muted">
+    If provided, detected crops are ordered with this row size before matching.
+    Leave empty to use the default behavior (5 per row).
+  </small>
 </div>
 
 <div class="match-filter mt-4">
@@ -127,10 +210,14 @@
 
 <div class="mt-3 export-summary"></div>
 <div class="export-error"></div>
-<div class="export-disp"></div>
 <div class="export-toolbar">
+  <button class="btn btn-outline-secondary"
+    id="toggle-names-btn"
+    onclick="toggleResultNames()"
+    disabled="true">Hide names</button>
   <button class="btn btn-warning"
     id="download-export-btn"
     onclick="downloadFavoritesExport()"
     disabled="true">Download favorites JSON</button>
 </div>
+<div class="export-disp"></div>
