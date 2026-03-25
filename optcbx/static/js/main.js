@@ -1,8 +1,12 @@
 var currentScreenshotB64 = '';
 var lastExportResponse = null;
 var areNamesVisible = true;
+var isBatchRunning = false;
+var lastBatchFavoritesPayload = null;
+var batchExportState = null;
 const IMAGE_SIZE_MIN = 32;
 const IMAGE_SIZE_MAX = 256;
+const MAX_RENDERED_BATCH_FAILURES = 200;
 
 $(document).ready(function () {
     $('#sidebarCollapse').on('click', function () {
@@ -13,97 +17,242 @@ $(document).ready(function () {
     $('input[name="image-size-mode"]').on('change', updateImageSizeControls);
     $('#image-width-input, #image-height-input').on('input change', updateImageSizeDisplay);
 
-    $('#screenshot-file').change(function () {
-        var file = this.files[0],
-            reader = new FileReader();
-
-        resetExportState();
-
-        if (!file) {
-            currentScreenshotB64 = '';
-            $("#export-btn").attr('disabled', true);
-            $('.screenshot-preview').empty();
-            return;
-        }
-
-        reader.onloadend = function () {
-            var b64 = reader.result.replace(/^data:.+;base64,/, '');
-            currentScreenshotB64 = b64;
-            $("#export-btn").attr('disabled', false);
-            $('.screenshot-preview').html(
-                `<img class="img-fluid" 
-                    alt="Character box screenshot" 
-                    src="${reader.result}" 
-                    style="margin: auto; display: block" 
-                    width=200>`
-            );
-        };
-
-        reader.readAsDataURL(file);
-    });
+    $('#screenshot-file').change(handleSingleScreenshotSelection);
+    $('#batch-screenshot-files').change(handleBatchScreenshotSelection);
 
     updateImageSizeControls();
+    updateSingleExportButtonState();
+    updateBatchSelectionSummary();
+    updateBatchExportButtonState();
+    disableBatchDownload();
     $('.loading-wrapper').hide();
 });
 
-function exportCharacterBox() {
-    const imageSizeConfig = getActiveImageSizeConfig();
-    const expectedCountConfig = getExpectedCountConfig();
-    const charactersPerRowConfig = getCharactersPerRowConfig();
-    const image = currentScreenshotB64;
-    const types = getSelectedTypes();
-    const classes = getSelectedClasses();
-    const body = {
-        image,
-        returnThumbnails: true,
-        types,
-        classes
+function handleSingleScreenshotSelection() {
+    var file = this.files[0];
+    var reader = new FileReader();
+
+    resetExportState();
+
+    if (!file) {
+        currentScreenshotB64 = '';
+        updateSingleExportButtonState();
+        $('.screenshot-preview').empty();
+        return;
+    }
+
+    reader.onloadend = function () {
+        var result = String(reader.result || '');
+
+        currentScreenshotB64 = result.replace(/^data:.+;base64,/, '');
+        updateSingleExportButtonState();
+        $('.screenshot-preview').html(
+            `<img class="img-fluid"
+                alt="Character box screenshot"
+                src="${result}"
+                style="margin: auto; display: block"
+                width=200>`
+        );
     };
+
+    reader.onerror = function () {
+        currentScreenshotB64 = '';
+        updateSingleExportButtonState();
+        $('.screenshot-preview').empty();
+        showError('Unable to read the selected screenshot.');
+    };
+
+    reader.readAsDataURL(file);
+}
+
+function handleBatchScreenshotSelection() {
+    resetBatchExportState();
+    updateBatchSelectionSummary();
+    updateBatchExportButtonState();
+}
+
+function updateSingleExportButtonState() {
+    $('#export-btn').attr('disabled', !currentScreenshotB64 || isBatchRunning);
+}
+
+function updateBatchExportButtonState() {
+    $('#batch-export-btn').attr('disabled', !getSelectedBatchFiles().length || isBatchRunning);
+}
+
+function setBatchRunningState(isRunning) {
+    isBatchRunning = isRunning;
+
+    $('#screenshot-file').prop('disabled', isRunning);
+    $('#batch-screenshot-files').prop('disabled', isRunning);
+    $('#expected-count-input, #characters-per-row-input').prop('disabled', isRunning);
+    $('.type-filter-input, .class-filter-input').prop('disabled', isRunning);
+    $('#batch-auto-download-input').prop('disabled', isRunning);
+
+    updateImageSizeControls();
+    updateSingleExportButtonState();
+    updateBatchExportButtonState();
+}
+
+function getSelectedBatchFiles() {
+    const input = $('#batch-screenshot-files').get(0);
+    return input && input.files ? Array.from(input.files) : [];
+}
+
+function updateBatchSelectionSummary() {
+    const files = getSelectedBatchFiles();
+    const selectedCount = files.length;
+
+    if (!selectedCount) {
+        $('.batch-selection-summary').html(
+            '<div class="text-muted">No batch screenshots selected yet.</div>'
+        );
+        return;
+    }
+
+    const visibleNames = files
+        .slice(0, 3)
+        .map(file => `<code>${escapeHtml(file.name)}</code>`)
+        .join(', ');
+    const remainingCount = selectedCount - Math.min(selectedCount, 3);
+    const remainder = remainingCount > 0 ? ` and <strong>${remainingCount}</strong> more` : '';
+    const fileLabel = selectedCount === 1 ? 'screenshot' : 'screenshots';
+    const suffix = visibleNames ? ` Selected: ${visibleNames}${remainder}.` : '';
+
+    $('.batch-selection-summary').html(
+        `<div class="text-muted"><strong>${selectedCount}</strong> ${fileLabel} ready for batch export.${suffix}</div>`
+    );
+}
+
+function exportCharacterBox() {
+    const exportOptionsResult = getValidatedExportOptions(true);
 
     clearMessages();
     disableToggleNames();
     disableDownloadExport();
 
-    if (!image) {
+    if (!currentScreenshotB64) {
         showError('Pick a screenshot before exporting.');
         return;
     }
 
-    if (!imageSizeConfig.valid) {
-        showError(imageSizeConfig.message);
+    if (!exportOptionsResult.valid) {
+        showError(exportOptionsResult.message);
         return;
-    }
-
-    if (!expectedCountConfig.valid) {
-        showError(expectedCountConfig.message);
-        return;
-    }
-
-    if (!charactersPerRowConfig.valid) {
-        showError(charactersPerRowConfig.message);
-        return;
-    }
-
-    if (imageSizeConfig.mode === 'custom') {
-        body.imageWidth = imageSizeConfig.width;
-        body.imageHeight = imageSizeConfig.height;
-    } else {
-        body.imageSize = imageSizeConfig.size;
-    }
-
-    if (expectedCountConfig.hasValue) {
-        body.expectedCount = expectedCountConfig.value;
-    }
-
-    if (charactersPerRowConfig.hasValue) {
-        body.charactersPerRow = charactersPerRowConfig.value;
     }
 
     load();
-    post('/export', body)
+    post('/export', buildExportRequestBody(currentScreenshotB64, exportOptionsResult.options))
         .then(renderExport)
         .catch(renderExportError)
         .finally(endLoad);
+}
+
+async function exportBatchCharacterBoxes() {
+    const files = getSelectedBatchFiles();
+    const exportOptionsResult = getValidatedExportOptions(false);
+    const autoDownload = $('#batch-auto-download-input').is(':checked');
+
+    clearBatchError();
+
+    if (!files.length) {
+        showBatchError('Pick at least one screenshot before starting batch export.');
+        return;
+    }
+
+    if (!exportOptionsResult.valid) {
+        showBatchError(exportOptionsResult.message);
+        return;
+    }
+
+    resetBatchExportState();
+    batchExportState = createBatchExportState(files.length);
+    renderBatchProgress();
+    setBatchRunningState(true);
+
+    try {
+        for (let index = 0; index < files.length; index += 1) {
+            const file = files[index];
+
+            batchExportState.currentFileName = file.name;
+            batchExportState.currentIndex = index + 1;
+            renderBatchProgress();
+
+            try {
+                const imageB64 = await readFileAsBase64(file);
+                const response = await post(
+                    '/export',
+                    buildExportRequestBody(imageB64, exportOptionsResult.options)
+                );
+
+                mergeBatchFavorites(batchExportState, response.characters || []);
+                batchExportState.succeeded += 1;
+            } catch (error) {
+                batchExportState.failed += 1;
+                batchExportState.failures.push({
+                    fileName: file.name,
+                    message: extractBatchFailureMessage(error)
+                });
+            }
+
+            batchExportState.processed += 1;
+            renderBatchProgress();
+        }
+
+        finalizeBatchExport(autoDownload);
+    } finally {
+        setBatchRunningState(false);
+        renderBatchProgress();
+        updateBatchSelectionSummary();
+    }
+}
+
+function getValidatedExportOptions(returnThumbnails) {
+    const imageSizeConfig = getActiveImageSizeConfig();
+    const expectedCountConfig = getExpectedCountConfig();
+    const charactersPerRowConfig = getCharactersPerRowConfig();
+    const types = getSelectedTypes();
+    const classes = getSelectedClasses();
+    const options = {
+        returnThumbnails,
+        types,
+        classes
+    };
+
+    if (!imageSizeConfig.valid) {
+        return imageSizeConfig;
+    }
+
+    if (!expectedCountConfig.valid) {
+        return expectedCountConfig;
+    }
+
+    if (!charactersPerRowConfig.valid) {
+        return charactersPerRowConfig;
+    }
+
+    if (imageSizeConfig.mode === 'custom') {
+        options.imageWidth = imageSizeConfig.width;
+        options.imageHeight = imageSizeConfig.height;
+    } else {
+        options.imageSize = imageSizeConfig.size;
+    }
+
+    if (expectedCountConfig.hasValue) {
+        options.expectedCount = expectedCountConfig.value;
+    }
+
+    if (charactersPerRowConfig.hasValue) {
+        options.charactersPerRow = charactersPerRowConfig.value;
+    }
+
+    return {
+        valid: true,
+        options
+    };
+}
+
+function buildExportRequestBody(image, exportOptions) {
+    return Object.assign({ image }, exportOptions);
 }
 
 function updateImageSizeControls() {
@@ -112,8 +261,9 @@ function updateImageSizeControls() {
 
     $('#image-size-square-controls').toggleClass('d-none', !squareMode);
     $('#image-size-custom-controls').toggleClass('d-none', squareMode);
-    $('#image-size-slider').prop('disabled', !squareMode);
-    $('#image-width-input, #image-height-input').prop('disabled', squareMode);
+    $('input[name="image-size-mode"]').prop('disabled', isBatchRunning);
+    $('#image-size-slider').prop('disabled', !squareMode || isBatchRunning);
+    $('#image-width-input, #image-height-input').prop('disabled', squareMode || isBatchRunning);
 
     updateImageSizeDisplay();
 }
@@ -320,14 +470,14 @@ function buildRowWarningSummary(charactersPerRow, detectedCount, rowCountMatch, 
 function renderResultGrid(characters, thumbnails) {
     const cards = characters.map((character, index) => {
         const thumbnail = thumbnails[index] || '';
-        const url = "https://optc-db.github.io/characters/#/view/" + character.number;
+        const url = 'https://optc-db.github.io/characters/#/view/' + character.number;
         const position = String(index + 1).padStart(2, '0');
         const escapedName = escapeHtml(character.name);
 
         return `
             <article class="result-card">
                 <div class="result-card__thumb">
-                    ${thumbnail ? `<img src="${thumbnail}" alt="Detected crop for ${escapedName}">` : `<div class="result-card__thumb-empty">No crop</div>`}
+                    ${thumbnail ? `<img src="${thumbnail}" alt="Detected crop for ${escapedName}">` : '<div class="result-card__thumb-empty">No crop</div>'}
                 </div>
                 <div class="result-card__meta">
                     <div class="result-card__position">Slot ${position}</div>
@@ -347,7 +497,21 @@ function downloadFavoritesExport() {
     }
 
     const payload = buildFavoritesExportPayload(lastExportResponse.characters);
-    const filename = `optcbx-favorites-${buildTimestamp()}.json`;
+    downloadFavoritesPayload(payload, `optcbx-favorites-${buildTimestamp()}.json`);
+}
+
+function downloadBatchFavoritesExport() {
+    if (!lastBatchFavoritesPayload || !Array.isArray(lastBatchFavoritesPayload.characters) || !lastBatchFavoritesPayload.characters.length) {
+        return;
+    }
+
+    downloadFavoritesPayload(
+        lastBatchFavoritesPayload,
+        `optcbx-favorites-batch-${buildTimestamp()}.json`
+    );
+}
+
+function downloadFavoritesPayload(payload, filename) {
     const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -437,6 +601,181 @@ function renderExportError(xhr) {
     $('.export-summary').html('');
 }
 
+function createBatchExportState(totalFiles) {
+    return {
+        totalFiles,
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        currentIndex: 0,
+        currentFileName: '',
+        uniqueFavorites: 0,
+        failures: [],
+        favoritesPayload: {
+            characters: []
+        },
+        favoritesSeen: new Set()
+    };
+}
+
+function mergeBatchFavorites(state, characters) {
+    const payload = buildFavoritesExportPayload(characters);
+
+    payload.characters.forEach(character => {
+        if (state.favoritesSeen.has(character.number)) {
+            return;
+        }
+
+        state.favoritesSeen.add(character.number);
+        state.favoritesPayload.characters.push(character);
+    });
+
+    state.uniqueFavorites = state.favoritesPayload.characters.length;
+}
+
+function readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+
+        reader.onloadend = function () {
+            const result = String(reader.result || '');
+
+            if (!result) {
+                reject(new Error(`Unable to read ${file.name}.`));
+                return;
+            }
+
+            resolve(result.replace(/^data:.+;base64,/, ''));
+        };
+
+        reader.onerror = function () {
+            reject(new Error(`Unable to read ${file.name}.`));
+        };
+
+        reader.readAsDataURL(file);
+    });
+}
+
+function extractBatchFailureMessage(error) {
+    if (error && error.responseJSON && error.responseJSON.message) {
+        return String(error.responseJSON.message);
+    }
+
+    if (error instanceof Error && error.message) {
+        return error.message;
+    }
+
+    if (typeof error === 'string' && error.trim()) {
+        return error;
+    }
+
+    return 'Batch export failed for this screenshot.';
+}
+
+function finalizeBatchExport(autoDownload) {
+    const state = batchExportState;
+    const hasFavorites = state.favoritesPayload.characters.length > 0;
+    const summaryClass = state.failed === 0
+        ? 'alert-success'
+        : (state.succeeded > 0 ? 'alert-warning' : 'alert-danger');
+    const jsonSummary = hasFavorites
+        ? `Merged <strong>${state.uniqueFavorites}</strong> unique favorite-ready id${state.uniqueFavorites === 1 ? '' : 's'} into one JSON file.`
+        : 'No favorites JSON was produced because every screenshot failed.';
+    const autoDownloadSummary = autoDownload && hasFavorites
+        ? '<div class="mt-2">Auto-download started using the browser default download location.</div>'
+        : '';
+
+    lastBatchFavoritesPayload = hasFavorites
+        ? { characters: state.favoritesPayload.characters.slice() }
+        : null;
+
+    if (lastBatchFavoritesPayload) {
+        enableBatchDownload();
+    } else {
+        disableBatchDownload();
+    }
+
+    $('.batch-export-summary').html(
+        `<div class="alert ${summaryClass}">
+            Processed <strong>${state.totalFiles}</strong> screenshot${state.totalFiles === 1 ? '' : 's'}.
+            Succeeded: <strong>${state.succeeded}</strong>.
+            Failed: <strong>${state.failed}</strong>.
+            <div class="mt-2">${jsonSummary}</div>
+            ${autoDownloadSummary}
+        </div>`
+    );
+
+    renderBatchFailures(state.failures);
+    renderBatchProgress();
+
+    if (autoDownload && lastBatchFavoritesPayload) {
+        downloadBatchFavoritesExport();
+    }
+}
+
+function renderBatchProgress() {
+    if (!batchExportState) {
+        $('.batch-export-status').addClass('d-none').html('');
+        return;
+    }
+
+    const state = batchExportState;
+    const percent = state.totalFiles === 0
+        ? 0
+        : Math.round((state.processed / state.totalFiles) * 100);
+    const currentLabel = isBatchRunning && state.currentFileName
+        ? `Processing <strong>${escapeHtml(state.currentFileName)}</strong> (${state.currentIndex}/${state.totalFiles})`
+        : 'Batch complete.';
+
+    $('.batch-export-status').removeClass('d-none').html(
+        `<div class="batch-export__status-card">
+            <div class="batch-export__status-header">
+                <strong>Batch progress</strong>
+                <span>${percent}%</span>
+            </div>
+            <div class="progress batch-export__progress">
+                <div class="progress-bar" role="progressbar"
+                    style="width: ${percent}%"
+                    aria-valuenow="${percent}"
+                    aria-valuemin="0"
+                    aria-valuemax="100">${percent}%</div>
+            </div>
+            <div class="batch-export__stats">
+                <span>Total: <strong>${state.totalFiles}</strong></span>
+                <span>Processed: <strong>${state.processed}</strong></span>
+                <span>Succeeded: <strong>${state.succeeded}</strong></span>
+                <span>Failed: <strong>${state.failed}</strong></span>
+                <span>Unique favorites: <strong>${state.uniqueFavorites}</strong></span>
+            </div>
+            <div class="batch-export__current">${currentLabel}</div>
+        </div>`
+    );
+}
+
+function renderBatchFailures(failures) {
+    if (!failures.length) {
+        $('.batch-export-failures').html('');
+        return;
+    }
+
+    const visibleFailures = failures.slice(0, MAX_RENDERED_BATCH_FAILURES);
+    const remainingFailures = failures.length - visibleFailures.length;
+    const items = visibleFailures.map(failure => (
+        `<li><span class="batch-export__failure-name">${escapeHtml(failure.fileName)}</span>: ${escapeHtml(failure.message)}</li>`
+    )).join('');
+    const overflowNote = remainingFailures > 0
+        ? `<div class="mt-2 text-muted">Showing the first ${visibleFailures.length} failures. ${remainingFailures} more were omitted from the on-page list.</div>`
+        : '';
+
+    $('.batch-export-failures').html(
+        `<div class="alert alert-warning mb-0">
+            <strong>Failed screenshots (${failures.length})</strong>
+            <ul class="batch-export__failure-list mt-2 mb-0">${items}</ul>
+            ${overflowNote}
+        </div>`
+    );
+}
+
 function resetExportState() {
     lastExportResponse = null;
     disableToggleNames();
@@ -445,13 +784,33 @@ function resetExportState() {
     $('.export-disp').html('');
 }
 
+function resetBatchExportState() {
+    batchExportState = null;
+    lastBatchFavoritesPayload = null;
+    disableBatchDownload();
+    clearBatchError();
+    $('.batch-export-summary').html('');
+    $('.batch-export-failures').html('');
+    renderBatchProgress();
+}
+
 function clearMessages() {
     $('.export-error').html('');
     $('.export-summary').html('');
 }
 
+function clearBatchError() {
+    $('.batch-export-error').html('');
+}
+
 function showError(message) {
     $('.export-error').html(`<div class="alert alert-danger">${message}</div>`);
+}
+
+function showBatchError(message) {
+    $('.batch-export-error').html(
+        `<div class="alert alert-danger">${escapeHtml(message)}</div>`
+    );
 }
 
 function disableDownloadExport() {
@@ -460,6 +819,14 @@ function disableDownloadExport() {
 
 function enableDownloadExport() {
     $('#download-export-btn').attr('disabled', false);
+}
+
+function disableBatchDownload() {
+    $('#download-batch-export-btn').attr('disabled', true);
+}
+
+function enableBatchDownload() {
+    $('#download-batch-export-btn').attr('disabled', false);
 }
 
 function toggleResultNames() {
@@ -540,10 +907,10 @@ function post(path, body) {
     return new Promise((resolve, reject) => {
         $.ajax({
             url: path,
-            type: "POST",
+            type: 'POST',
             data: JSON.stringify(body),
-            contentType: "application/json",
-            dataType: "json",
+            contentType: 'application/json',
+            dataType: 'json',
             success: data => resolve(data),
             error: xhr => reject(xhr)
         });

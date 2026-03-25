@@ -178,6 +178,71 @@
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
 }
 
+.batch-export {
+    margin-top: 2.5rem;
+    padding: 1.25rem;
+    border-radius: 22px;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+    box-shadow: 0 18px 38px rgba(15, 23, 42, 0.06);
+}
+
+.batch-selection-summary code {
+    white-space: normal;
+    word-break: break-word;
+}
+
+.batch-export__status-card {
+    padding: 1rem 1.1rem;
+    border-radius: 18px;
+    border: 1px solid rgba(15, 23, 42, 0.1);
+    background: #ffffff;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.batch-export__status-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.85rem;
+    color: #0f172a;
+}
+
+.batch-export__progress {
+    height: 1rem;
+    margin-bottom: 1rem;
+}
+
+.batch-export__stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.85rem 1.25rem;
+    color: #334155;
+    font-size: 0.95rem;
+}
+
+.batch-export__current {
+    margin-top: 0.9rem;
+    color: #475569;
+    font-size: 0.95rem;
+}
+
+.batch-export__failure-list {
+    max-height: 240px;
+    overflow: auto;
+    padding-left: 1.25rem;
+}
+
+.batch-export__failure-list li + li {
+    margin-top: 0.55rem;
+}
+
+.batch-export__failure-name {
+    font-weight: 700;
+    color: #0f172a;
+}
+
 .export-toolbar {
     display: flex;
     justify-content: center;
@@ -289,6 +354,15 @@
     .export-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+
+    .batch-export {
+        padding: 1rem;
+    }
+
+    .batch-export__stats {
+        flex-direction: column;
+        gap: 0.55rem;
+    }
 }
 
 @media (max-width: 576px) {
@@ -306,5 +380,10 @@
 
     .result-card {
         grid-template-columns: 88px 1fr;
+    }
+
+    .batch-export__status-header {
+        flex-direction: column;
+        align-items: flex-start;
     }
 }

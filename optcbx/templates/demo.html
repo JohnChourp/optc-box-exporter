@@ -221,3 +221,53 @@
     disabled="true">Download favorites JSON</button>
 </div>
 <div class="export-disp"></div>
+
+<section class="batch-export">
+  <h4>Batch Upload Screenshots</h4>
+  <p>
+    Run the same export settings on many screenshots in sequence and merge everything into one favorites JSON file.
+    The image size, expected count, characters per row, and type/class filters above are reused for every file.
+  </p>
+
+  <div class="form-group mb-2">
+    <label for="batch-screenshot-files">Character box screenshots</label>
+    <input type="file"
+      class="form-control-file"
+      id="batch-screenshot-files"
+      accept="image/*"
+      multiple>
+  </div>
+
+  <div class="batch-selection-summary mb-3"></div>
+
+  <div class="form-check">
+    <input class="form-check-input"
+      type="checkbox"
+      id="batch-auto-download-input"
+      checked>
+    <label class="form-check-label" for="batch-auto-download-input">
+      Auto-download merged favorites JSON when batch export completes
+    </label>
+  </div>
+  <small class="text-muted d-block mt-2">
+    The browser controls the download destination. In most setups this means the default Downloads folder.
+  </small>
+
+  <button class="mt-4 btn btn-block btn-lg btn-warning text-center"
+    id="batch-export-btn"
+    onclick="exportBatchCharacterBoxes()"
+    disabled="true">Start batch export</button>
+
+  <div class="batch-export-status mt-3 d-none" aria-live="polite"></div>
+  <div class="mt-3 batch-export-summary"></div>
+  <div class="batch-export-error"></div>
+
+  <div class="export-toolbar">
+    <button class="btn btn-warning"
+      id="download-batch-export-btn"
+      onclick="downloadBatchFavoritesExport()"
+      disabled="true">Download batch favorites JSON</button>
+  </div>
+
+  <div class="batch-export-failures mt-3"></div>
+</section>

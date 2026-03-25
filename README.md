@@ -122,6 +122,31 @@ matching, which usually makes exports faster and more accurate when you already
 know the type/class mix in the screenshot. When both filters are active, a
 portrait must satisfy both groups.
 
+The browser UI now also includes a separate **batch export** section:
+
+- Upload many screenshots at once with a multi-file input.
+- The UI analyzes them **sequentially** by reusing the same `POST /export`
+  endpoint that powers the single-image export.
+- The final batch output is one merged favorites JSON with the same schema as
+  the single export:
+
+```json
+{
+  "characters": [
+    { "number": 101, "name": "Example unit" }
+  ]
+}
+```
+
+Batch merge behavior:
+
+- Favorites are deduplicated by `number`.
+- First-seen order is preserved across the whole batch.
+- Failed screenshots are skipped and listed in the UI report.
+- Auto-download uses the browser's normal download behavior, which usually means
+  the default Downloads folder. The app does **not** write directly to an
+  arbitrary filesystem path.
+
 ### Image size controls
 
 In the browser export UI, **Image Size** is the resolution used for each
