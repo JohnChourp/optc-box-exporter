@@ -16,14 +16,15 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT_DIR / 'data'
 REPORT_PATH = DATA_DIR / 'portrait-sync-report.json'
 MANIFEST_SCRIPT = ROOT_DIR / 'tools' / 'build_portrait_manifest.mjs'
-RAW_GITHUB_BASE = 'https://raw.githubusercontent.com/optc-db/optc-db.github.io/master'
+RAW_GITHUB_BASE_BY_SOURCE = {
+    'optc-db': 'https://raw.githubusercontent.com/optc-db/optc-db.github.io/master',
+    '2shankz': 'https://raw.githubusercontent.com/2Shankz/optc-db.github.io/master',
+}
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
-GLO_CACHE_SUBPATH = (
-    'public',
-    'assets',
-    'offline-packs',
-    'thumbnails-glo',
-)
+TEAM_BUILDER_CACHE_SUBPATH_BY_REGION = {
+    'glo': ('public', 'assets', 'offline-packs', 'thumbnails-glo'),
+    'jap': ('public', 'assets', 'offline-packs', 'thumbnails-jap'),
+}
 DEFAULT_TIMEOUT = 30
 PACK_KEY_TO_REGION = {
     'thumbnailsGlo': 'glo',
@@ -57,7 +58,8 @@ def load_viable_unit_ids(units_path: Path) -> List[int]:
     if not units_path.exists():
         return []
 
-    units = json.load(open(units_path))
+    with open(units_path) as units_file:
+        units = json.load(units_file)
     return [
         index for index, unit in enumerate(units, start=1)
         if viable_unit(unit)
@@ -108,7 +110,8 @@ def _load_sync_report(
         return None
 
     try:
-        report = json.load(open(report_path))
+        with open(report_path) as report_file:
+            report = json.load(report_file)
     except json.JSONDecodeError:
         return None
 
@@ -139,27 +142,30 @@ def build_local_portrait_status(units_path: Path,
     valid_ids_set = set(valid_ids)
     unresolved_ids_set = set(unresolved_ids)
 
-    blocking_missing_ids = [
-        portrait_id for portrait_id in viable_ids
-        if portrait_id not in valid_ids_set and portrait_id not in unresolved_ids_set
-    ]
     unresolved_missing_ids = [
         portrait_id for portrait_id in viable_ids
         if portrait_id not in valid_ids_set and portrait_id in unresolved_ids_set
+    ]
+    blocking_missing_ids = [
+        portrait_id for portrait_id in viable_ids
+        if portrait_id not in valid_ids_set and portrait_id not in unresolved_ids_set
     ]
 
     expected_resolvable_count = len(viable_ids) - len(unresolved_ids_set)
     resolved_ready = (
         units_exists and
         len(blocking_missing_ids) == 0 and
-        all(portrait_id not in invalid_ids for portrait_id in unresolved_ids_set)
+        len(failed_ids) == 0
     )
+    full_coverage_ready = resolved_ready and len(unresolved_missing_ids) == 0
 
     summary = (
         f"Valid portraits: {len(valid_ids_set & set(viable_ids))}/{len(viable_ids)}. "
         f"Blocking missing: {len(blocking_missing_ids)}."
     )
-    if unresolved_ids:
+    if unresolved_missing_ids:
+        summary += f" Known upstream unresolved missing: {len(unresolved_missing_ids)}."
+    elif unresolved_ids:
         summary += f" Known upstream unresolved: {len(unresolved_ids)}."
     if failed_ids:
         summary += f" Last sync failures: {len(failed_ids)}."
@@ -180,13 +186,15 @@ def build_local_portrait_status(units_path: Path,
         'blocking_missing_ids': blocking_missing_ids,
         'blocking_missing_count': len(blocking_missing_ids),
         'unresolved_missing_ids': unresolved_missing_ids,
+        'unresolved_missing_count': len(unresolved_missing_ids),
+        'full_coverage_ready': full_coverage_ready,
         'ready': resolved_ready,
         'report_available': report is not None,
         'summary': summary,
     }
 
 
-def _load_manifest() -> Dict[str, Any]:
+def _load_manifest(source: str = 'optc-db') -> Dict[str, Any]:
     node_bin = shutil.which('node')
     if not node_bin:
         raise click.ClickException(
@@ -194,7 +202,7 @@ def _load_manifest() -> Dict[str, Any]:
         )
 
     process = subprocess.run(
-        [node_bin, str(MANIFEST_SCRIPT)],
+        [node_bin, str(MANIFEST_SCRIPT), f'--source={source}'],
         cwd=str(ROOT_DIR),
         check=True,
         capture_output=True,
@@ -209,20 +217,28 @@ def _load_manifest() -> Dict[str, Any]:
         ) from exc
 
 
-def _download_url_for(source_url: str) -> str:
+def _raw_github_base_for(source_key: str) -> str:
+    return RAW_GITHUB_BASE_BY_SOURCE.get(source_key, RAW_GITHUB_BASE_BY_SOURCE['optc-db'])
+
+
+def _download_url_for(source_url: str, source_key: str = 'optc-db') -> str:
     if source_url.startswith('http://') or source_url.startswith('https://'):
         return source_url
-    return f"{RAW_GITHUB_BASE}{source_url}"
+    return f"{_raw_github_base_for(source_key)}{source_url}"
 
 
 def _team_builder_cache_path(team_builder_root: Optional[Path],
                              item: Dict[str, Any]) -> Optional[Path]:
     if team_builder_root is None:
         return None
-    if item.get('region') != 'glo' or not item.get('relativePath'):
+    if not item.get('relativePath'):
         return None
 
-    return team_builder_root.joinpath(*GLO_CACHE_SUBPATH, item['relativePath'])
+    cache_subpath = TEAM_BUILDER_CACHE_SUBPATH_BY_REGION.get(str(item.get('region')))
+    if cache_subpath is None:
+        return None
+
+    return team_builder_root.joinpath(*cache_subpath, item['relativePath'])
 
 
 def _manual_override_path(team_builder_root: Optional[Path],
@@ -235,13 +251,17 @@ def _manual_override_path(team_builder_root: Optional[Path],
     return team_builder_root / 'scripts' / 'data' / 'character-images' / item['manualFile']
 
 
-def _copy_cached_glo_asset(cache_path: Optional[Path], destination: Path) -> bool:
+def _copy_cached_asset(cache_path: Optional[Path], destination: Path) -> bool:
     if cache_path is None or not cache_path.exists() or not _is_valid_png(cache_path):
         return False
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(cache_path, destination)
     return _is_valid_png(destination)
+
+
+def _copy_cached_glo_asset(cache_path: Optional[Path], destination: Path) -> bool:
+    return _copy_cached_asset(cache_path, destination)
 
 
 def _load_team_builder_overrides(
@@ -253,7 +273,8 @@ def _load_team_builder_overrides(
     if not overrides_path.exists():
         return {}
 
-    raw_overrides = json.load(open(overrides_path))
+    with open(overrides_path) as overrides_file:
+        raw_overrides = json.load(overrides_file)
     overrides: Dict[int, Dict[str, Any]] = {}
     for raw_id, entry in raw_overrides.items():
         override_id = _safe_int(str(raw_id))
@@ -322,8 +343,8 @@ def _download_png(destination: Path, source_url: str) -> Tuple[str, Optional[str
 
 
 def _sync_single_portrait(
-        payload: Tuple[Dict[str, Any], Path, Optional[Path]]) -> Dict[str, Any]:
-    item, output_path, team_builder_root = payload
+        payload: Tuple[Dict[str, Any], Path, Optional[Path], str]) -> Dict[str, Any]:
+    item, output_path, team_builder_root, source_key = payload
     portrait_id = item['id']
     destination = output_path / f"{portrait_id}.png"
     had_invalid_file = destination.exists() and not _is_valid_png(destination)
@@ -337,7 +358,7 @@ def _sync_single_portrait(
         }
 
     manual_path = _manual_override_path(team_builder_root, item)
-    if _copy_cached_glo_asset(manual_path, destination):
+    if _copy_cached_asset(manual_path, destination):
         return {
             'id': portrait_id,
             'action': 'copied',
@@ -355,7 +376,7 @@ def _sync_single_portrait(
         }
 
     cache_path = _team_builder_cache_path(team_builder_root, item)
-    if _copy_cached_glo_asset(cache_path, destination):
+    if _copy_cached_asset(cache_path, destination):
         return {
             'id': portrait_id,
             'action': 'copied',
@@ -363,7 +384,7 @@ def _sync_single_portrait(
             'message': None,
         }
 
-    action, message = _download_png(destination, item['sourceUrl'])
+    action, message = _download_png(destination, _download_url_for(item['sourceUrl'], source_key))
     return {
         'id': portrait_id,
         'action': action,
@@ -381,6 +402,7 @@ def _write_sync_report(report_path: Path,
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
+        'sourceKey': manifest.get('sourceKey', 'optc-db'),
         'sourceVersion': manifest.get('sourceVersion', 'unknown'),
         'viableCount': len(viable_ids),
         'viableIdsHash': _viable_ids_hash(viable_ids),
@@ -443,7 +465,11 @@ def _print_summary(summary: Dict[str, Any], status: Dict[str, Any]) -> None:
 @click.option('--team-builder-root',
               type=click.Path(file_okay=False, path_type=Path),
               default=None)
-def main(units: Path, output: Path, team_builder_root: Optional[Path]):
+@click.option('--source',
+              type=click.Choice(['optc-db', '2shankz']),
+              default='optc-db',
+              show_default=True)
+def main(units: Path, output: Path, team_builder_root: Optional[Path], source: str):
     """Download or repair all portrait thumbnails required by the local units set."""
     output.mkdir(exist_ok=True, parents=True)
 
@@ -451,7 +477,7 @@ def main(units: Path, output: Path, team_builder_root: Optional[Path]):
         team_builder_root = _default_team_builder_root()
 
     local_viable_ids = set(load_viable_unit_ids(units))
-    manifest = _load_manifest()
+    manifest = _load_manifest(source)
     manifest_items = [
         item for item in manifest.get('items', [])
         if item['id'] in local_viable_ids
@@ -468,7 +494,7 @@ def main(units: Path, output: Path, team_builder_root: Optional[Path]):
 
     results = thread_map(
         _sync_single_portrait,
-        [(item, output, team_builder_root) for item in manifest_items],
+        [(item, output, team_builder_root, manifest.get('sourceKey', source)) for item in manifest_items],
         max_workers=max(4, mp.cpu_count() * 2),
         total=len(manifest_items),
     )

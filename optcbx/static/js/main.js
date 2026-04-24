@@ -25,8 +25,57 @@ $(document).ready(function () {
     updateBatchSelectionSummary();
     updateBatchExportButtonState();
     disableBatchDownload();
+    initializeUnresolvedIdBrowsers();
     $('.loading-wrapper').hide();
 });
+
+function initializeUnresolvedIdBrowsers() {
+    $('.unresolved-id-browser').each(function () {
+        const container = $(this);
+        const ids = parseUnresolvedIds(container.attr('data-unresolved-ids'));
+        const state = {
+            ids,
+            visibleCount: Math.min(10, ids.length)
+        };
+
+        container.data('unresolvedState', state);
+        container.find('.unresolved-id-browser__load-more').on('click', function () {
+            state.visibleCount = Math.min(state.visibleCount + 10, state.ids.length);
+            renderUnresolvedIdBrowser(container);
+        });
+        renderUnresolvedIdBrowser(container);
+    });
+}
+
+function parseUnresolvedIds(rawValue) {
+    try {
+        const parsed = JSON.parse(rawValue || '[]');
+        return Array.isArray(parsed)
+            ? parsed.filter(value => Number.isInteger(Number(value))).map(value => Number(value))
+            : [];
+    } catch (error) {
+        return [];
+    }
+}
+
+function renderUnresolvedIdBrowser(container) {
+    const state = container.data('unresolvedState') || { ids: [], visibleCount: 0 };
+    const visibleIds = state.ids.slice(0, state.visibleCount);
+
+    container.find('.unresolved-id-browser__list').html(
+        visibleIds.map(id => `<code class="unresolved-id-browser__chip">${id}</code>`).join('')
+    );
+
+    const remainingCount = state.ids.length - state.visibleCount;
+    const button = container.find('.unresolved-id-browser__load-more');
+    if (remainingCount > 0) {
+        button
+            .removeClass('d-none')
+            .text(`Load more (${remainingCount} remaining)`);
+    } else {
+        button.addClass('d-none');
+    }
+}
 
 function handleSingleScreenshotSelection() {
     var file = this.files[0];

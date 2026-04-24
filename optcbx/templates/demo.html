@@ -28,6 +28,21 @@
             {% if check.details and check.details.blocking_missing_count %}
             <div><small class="text-muted">Blocking missing IDs: {{ check.details.blocking_missing_count }}</small></div>
             {% endif %}
+            {% if check.details and check.details.unresolved_missing_count %}
+            <div
+              class="unresolved-id-browser mt-2"
+              data-unresolved-ids='{{ check.details.unresolved_missing_ids | tojson }}'>
+              <div class="small text-muted mb-1">
+                Unresolved IDs still missing: {{ check.details.unresolved_missing_count }}
+              </div>
+              <div class="unresolved-id-browser__list" aria-live="polite"></div>
+              <button
+                type="button"
+                class="btn btn-outline-secondary btn-sm unresolved-id-browser__load-more mt-2">
+                Load more
+              </button>
+            </div>
+            {% endif %}
           </div>
           <span class="badge {% if check.available %}badge-success{% else %}badge-secondary{% endif %}">
             {{ check.status_label }}

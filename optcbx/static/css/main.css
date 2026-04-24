@@ -70,6 +70,25 @@
     word-break: break-word;
 }
 
+.unresolved-id-browser__list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.unresolved-id-browser__chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 1.75rem;
+    padding: 0.2rem 0.45rem;
+    border: 1px solid rgba(108, 117, 125, 0.32);
+    border-radius: 4px;
+    background: #f8f9fa;
+    color: #343a40;
+    font-size: 0.88rem;
+    line-height: 1.2;
+}
+
 .slider {
     -webkit-appearance: none;
     width: 100%;

@@ -35,7 +35,7 @@ RUNTIME_REQUIREMENTS = [
         "path_display": 'data/units.json',
         "kind": "file",
         "required_for": "Browser UI + CLI demo",
-        "help": "Refresh with tools/download-units.sh if you need newer OPTC data."
+        "help": "Refresh with tools/download-units.sh --source=optc-db if you need newer OPTC data."
     },
     {
         "key": "portraits",
@@ -46,7 +46,8 @@ RUNTIME_REQUIREMENTS = [
         "pattern": '*.png',
         "required_for": "Browser UI + CLI demo",
         "help": ("Run `python -m optcbx download-portraits --units data/units.json "
-                  "--output data/Portraits [--team-builder-root ../optc-team-builder]`.")
+                  "--output data/Portraits --source=optc-db "
+                  "[--team-builder-root ../optc-team-builder]`.")
     },
     {
         "key": "detector_config",
@@ -143,10 +144,16 @@ def _build_runtime_status():
             available = portrait_status["ready"]
             details = portrait_status
             help_text = f"{portrait_status['summary']} {help_text}"
+            status_label = (
+                "Ready" if portrait_status.get("full_coverage_ready") else
+                ("Partial ready" if available else "Needs sync")
+            )
         elif kind == 'glob':
             available = path.exists() and any(path.glob(requirement["pattern"]))
+            status_label = "Ready" if available else "Missing"
         else:
             available = path.exists()
+            status_label = "Ready" if available else "Missing"
 
         checks.append({
             "key": requirement["key"],
@@ -156,10 +163,7 @@ def _build_runtime_status():
             "required_for": requirement["required_for"],
             "help": help_text,
             "details": details,
-            "status_label": (
-                "Ready" if available else
-                ("Needs sync" if requirement["key"] == 'portraits' else "Missing")
-            ),
+            "status_label": status_label,
         })
 
     availability = {item["key"]: item["available"] for item in checks}

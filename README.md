@@ -67,17 +67,20 @@ pip install -r requirements.txt
 2. Refresh the OPTC units metadata from [OPTC DB](https://github.com/optc-db/optc-db.github.io) when you want the latest roster
 
 ```bash
-sh ./tools/download-units.sh
+sh ./tools/download-units.sh --source=optc-db
 ```
 
-This step updates `data/units.json`. The repo already includes a copy.
+This step updates `data/units.json`. The default source is `optc-db`; pass
+`--source=2shankz` only when you intentionally want to mirror that upstream
+fork instead.
 
 3. Sync the portraits used for matching
 
 ```bash
 python -m optcbx download-portraits \
     --units data/units.json \
-    --output data/Portraits
+    --output data/Portraits \
+    --source=optc-db
 ```
 
 If you also have the sibling `optc-team-builder` repo next to this project, the
@@ -88,7 +91,8 @@ it explicitly:
 python -m optcbx download-portraits \
     --units data/units.json \
     --output data/Portraits \
-    --team-builder-root ../optc-team-builder
+    --team-builder-root ../optc-team-builder \
+    --source=optc-db
 ```
 
 4. Start the local web server
@@ -104,8 +108,10 @@ http://127.0.0.1:1234
 ```
 
 The page now shows a startup checklist. It validates portrait coverage against
-the current local units dataset, not just file presence, and it reports any
-blocking gaps before export starts.
+the current local units dataset, not just file presence, and it reports missing
+portrait gaps before export starts. Known upstream gaps are shown as partial
+coverage warnings; browser export still runs for the portraits available
+locally.
 
 `DATABASE_URL` is now optional for local runs. Without it, the app still starts
 normally and the feedback feature is simply disabled.
@@ -186,7 +192,8 @@ API behavior for `POST /export`:
   (or when `charactersPerRow` is not set).
 - `rowCountWarning`: present only when `charactersPerRow` is set and divisibility check fails.
 
-Known upstream unresolved portrait IDs are currently:
+Known upstream unresolved portrait IDs that need manual portraits for full OCR
+coverage are currently:
 
 ```text
 4204, 4206, 4207, 4208, 4209, 4210, 4214, 4215, 5602, 5603, 5604, 5605
@@ -361,3 +368,11 @@ enough to generate feature vectors with high capacity of representation. Therefo
 reconstruct One Piece Characters' portraits. Using this new pretrained model the resulting matches seems accurate.
 
 > NOTE: The ones interested in the AI part I upload all the related code inside the `notebooks` directory.
+
+to update characters run script
+
+./tools/update_characters.sh
+
+to run application safely and correctly
+
+./tools/stop_run.sh

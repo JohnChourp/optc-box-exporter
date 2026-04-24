@@ -1,17 +1,10 @@
 {
-  "generatedAt": "2026-03-21T11:32:20.701022+00:00",
+  "generatedAt": "2026-04-24T04:49:39.125876+00:00",
+  "sourceKey": "optc-db",
   "sourceVersion": "unknown",
   "viableCount": 4800,
   "viableIdsHash": "a9cc3edc47d099af4149d8787a43e5a054d80b05",
   "unresolvedIds": [
-    4204,
-    4206,
-    4207,
-    4208,
-    4209,
-    4210,
-    4214,
-    4215,
     5602,
     5603,
     5604,
@@ -19,11 +12,11 @@
   ],
   "failedIds": [],
   "summary": {
-    "copied": 4174,
-    "downloaded": 614,
-    "skipped": 0,
+    "copied": 8,
+    "downloaded": 0,
+    "skipped": 4788,
     "repaired": 0,
-    "unresolved": 12,
+    "unresolved": 4,
     "failed": 0
   }
 }

@@ -52,7 +52,8 @@ PY
 if [ "${BLOCKING_PORTRAITS:-0}" != "0" ]; then
     python -m optcbx download-portraits \
         --units data/units.json \
-        --output data/Portraits
+        --output data/Portraits \
+        --source optc-db
 fi
 
 if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then

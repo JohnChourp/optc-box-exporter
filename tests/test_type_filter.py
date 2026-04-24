@@ -213,6 +213,31 @@ class ExportRouteTypeFilterTests(unittest.TestCase):
             (),
         )
 
+    def test_export_allows_known_unresolved_portrait_gaps(self) -> None:
+        partial_portrait_status = {
+            'ready': True,
+            'full_coverage_ready': False,
+            'summary': 'Valid portraits: 4788/4800. Blocking missing: 0. Known upstream unresolved missing: 12.',
+            'unresolved_missing_ids': [4204],
+            'unresolved_missing_count': 1,
+        }
+        characters = [Character('Recognized unit', 'STR', ['Fighter'], '5', 101)]
+        thumbnails = np.zeros((1, 4, 4, 3), dtype='uint8')
+
+        with patch('optcbx.app_flask.build_local_portrait_status',
+                   return_value=partial_portrait_status), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot',
+                      return_value=(characters, thumbnails)):
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 64,
+                'returnThumbnails': True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['characters'][0]['number'], 101)
+
     def test_export_accepts_step_one_square_size(self) -> None:
         runtime = {'web_ready': True}
         characters = [Character('Dual unit', ['DEX', 'QCK'], ['Driven'], '6', 202)]

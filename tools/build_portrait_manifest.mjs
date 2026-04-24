@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 
-const sourceRepoBase = "https://raw.githubusercontent.com/optc-db/optc-db.github.io/master";
-const githubApiBase = "https://api.github.com/repos/optc-db/optc-db.github.io";
+import { parseSourceArgs, resolveSourceConfig } from "./optc_sources.mjs";
+
 const githubHeaders = {
   "User-Agent": "optc-box-exporter",
   Accept: "application/vnd.github+json",
@@ -70,10 +71,10 @@ function createSandbox() {
   });
 }
 
-async function fetchText(relativePath) {
-  const response = await fetch(`${sourceRepoBase}/${relativePath}`, { headers: githubHeaders });
+async function fetchText(source, relativePath) {
+  const response = await fetch(`${source.rawBaseUrl}/${relativePath}`, { headers: githubHeaders });
   if (!response.ok) {
-    throw new Error(`Failed to fetch ${relativePath}: ${response.status}`);
+    throw new Error(`Failed to fetch ${relativePath} from ${source.label}: ${response.status}`);
   }
   return response.text();
 }
@@ -299,8 +300,8 @@ function mergeThumbnailOverrides(assetsById, thumbnailOverrides) {
   return assetsById;
 }
 
-async function buildPackTrees() {
-  const listing = await fetchJson(`${githubApiBase}/contents/api/images/thumbnail?ref=master`);
+async function buildPackTrees(source) {
+  const listing = await fetchJson(`${source.githubApiBase}/contents/api/images/thumbnail?ref=${source.ref}`);
   const packTrees = [];
 
   for (const pack of packDefinitions) {
@@ -309,7 +310,7 @@ async function buildPackTrees() {
       throw new Error(`Missing GitHub tree for ${pack.entryName}`);
     }
 
-    const tree = await fetchJson(`${githubApiBase}/git/trees/${directory.sha}?recursive=1`);
+    const tree = await fetchJson(`${source.githubApiBase}/git/trees/${directory.sha}?recursive=1`);
     packTrees.push({
       key: pack.key,
       files: normalizePackPaths(tree, pack.entryName),
@@ -343,22 +344,10 @@ function buildSourceForAssets(assets) {
   };
 }
 
-async function main() {
-  const [unitsSource, utilsSource, versionSource, packTrees] = await Promise.all([
-    fetchText("common/data/units.js"),
-    fetchText("common/js/utils.js"),
-    fetchText("common/data/version.js"),
-    buildPackTrees(),
-  ]);
-
-  const sandbox = createSandbox();
-  vm.runInNewContext(unitsSource, sandbox, { timeout: 20_000 });
-  vm.runInNewContext(utilsSource, sandbox, { timeout: 20_000 });
-
-  const units = sandbox.window?.units ?? [];
+export function buildManifestPayload(units, utilsWindow, versionSource, packTrees, source) {
   const assetsById = buildCharacterAssetsMap(packTrees);
   const packFileIndexes = buildPackFileIndexes(packTrees);
-  const thumbnailOverrides = buildDeterministicThumbnailOverrides(units.length, sandbox.window, packFileIndexes);
+  const thumbnailOverrides = buildDeterministicThumbnailOverrides(units.length, utilsWindow, packFileIndexes);
   mergeThumbnailOverrides(assetsById, thumbnailOverrides);
 
   const items = units.flatMap((unit, index) => {
@@ -368,29 +357,50 @@ async function main() {
 
     const id = index + 1;
     const assets = assetsById.get(id) ?? createEmptyAssets();
-    const source = buildSourceForAssets(assets);
+    const assetSource = buildSourceForAssets(assets);
 
     return [{
       id,
       name: Array.isArray(unit) ? unit[0] : null,
-      sourceUrl: source.sourceUrl,
-      region: source.region,
-      relativePath: source.relativePath,
+      sourceUrl: assetSource.sourceUrl,
+      region: assetSource.region,
+      relativePath: assetSource.relativePath,
     }];
   });
 
-  process.stdout.write(
-    JSON.stringify({
-      generatedAt: new Date().toISOString(),
-      sourceVersion: parseVersion(versionSource),
-      unitsTotal: units.length,
-      viableCount: items.length,
-      items,
-    }),
-  );
+  return {
+    generatedAt: new Date().toISOString(),
+    sourceKey: source.key,
+    sourceVersion: parseVersion(versionSource),
+    unitsTotal: units.length,
+    viableCount: items.length,
+    items,
+  };
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+export async function buildPortraitManifest(args = process.argv.slice(2)) {
+  const options = parseSourceArgs(args);
+  const source = resolveSourceConfig(options.source);
+  const [unitsSource, utilsSource, versionSource, packTrees] = await Promise.all([
+    fetchText(source, "common/data/units.js"),
+    fetchText(source, "common/js/utils.js"),
+    fetchText(source, "common/data/version.js"),
+    buildPackTrees(source),
+  ]);
+
+  const sandbox = createSandbox();
+  vm.runInNewContext(unitsSource, sandbox, { timeout: 20_000 });
+  vm.runInNewContext(utilsSource, sandbox, { timeout: 20_000 });
+
+  const units = sandbox.window?.units ?? [];
+  return buildManifestPayload(units, sandbox.window, versionSource, packTrees, source);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  buildPortraitManifest().then((manifest) => {
+    process.stdout.write(JSON.stringify(manifest));
+  }).catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
