@@ -1,4 +1,8 @@
 var currentScreenshotB64 = '';
+var currentScreenshotDataUrl = '';
+var splitPreviewState = null;
+var selectedGridLine = null;
+var activeGridDrag = null;
 var lastExportResponse = null;
 var areNamesVisible = true;
 var isBatchRunning = false;
@@ -19,9 +23,17 @@ $(document).ready(function () {
 
     $('#screenshot-file').change(handleSingleScreenshotSelection);
     $('#batch-screenshot-files').change(handleBatchScreenshotSelection);
+    $('#add-vertical-line-btn').on('click', function () { addGridLine('vertical'); });
+    $('#add-horizontal-line-btn').on('click', function () { addGridLine('horizontal'); });
+    $('#remove-grid-line-btn').on('click', removeSelectedGridLine);
+    $('#reset-grid-lines-btn').on('click', resetGridLinesToDetected);
+
+    $(document).on('mousemove touchmove', handleGridDragMove);
+    $(document).on('mouseup touchend touchcancel', endGridDrag);
 
     updateImageSizeControls();
     updateSingleExportButtonState();
+    updateGridControlsState();
     updateBatchSelectionSummary();
     updateBatchExportButtonState();
     disableBatchDownload();
@@ -82,9 +94,11 @@ function handleSingleScreenshotSelection() {
     var reader = new FileReader();
 
     resetExportState();
+    resetSplitPreviewState();
 
     if (!file) {
         currentScreenshotB64 = '';
+        currentScreenshotDataUrl = '';
         updateSingleExportButtonState();
         $('.screenshot-preview').empty();
         return;
@@ -94,18 +108,16 @@ function handleSingleScreenshotSelection() {
         var result = String(reader.result || '');
 
         currentScreenshotB64 = result.replace(/^data:.+;base64,/, '');
+        currentScreenshotDataUrl = result;
         updateSingleExportButtonState();
-        $('.screenshot-preview').html(
-            `<img class="img-fluid"
-                alt="Character box screenshot"
-                src="${result}"
-                style="margin: auto; display: block"
-                width=200>`
-        );
+        $('.screenshot-preview').html('<div class="text-muted">Preparing split preview...</div>');
+        requestSplitPreview();
     };
 
     reader.onerror = function () {
         currentScreenshotB64 = '';
+        currentScreenshotDataUrl = '';
+        resetSplitPreviewState();
         updateSingleExportButtonState();
         $('.screenshot-preview').empty();
         showError('Unable to read the selected screenshot.');
@@ -121,11 +133,331 @@ function handleBatchScreenshotSelection() {
 }
 
 function updateSingleExportButtonState() {
-    $('#export-btn').attr('disabled', !currentScreenshotB64 || isBatchRunning);
+    $('#export-btn').attr('disabled', !currentScreenshotB64 || !isManualGridValid() || isBatchRunning);
 }
 
 function updateBatchExportButtonState() {
     $('#batch-export-btn').attr('disabled', !getSelectedBatchFiles().length || isBatchRunning);
+}
+
+function requestSplitPreview() {
+    if (!currentScreenshotB64) {
+        return;
+    }
+
+    load();
+    post('/split-preview', { image: currentScreenshotB64 })
+        .then(function (response) {
+            const verticalLines = normalizeLineList(response.verticalLines, response.imageWidth);
+            const horizontalLines = normalizeLineList(response.horizontalLines, response.imageHeight);
+
+            splitPreviewState = {
+                imageWidth: response.imageWidth,
+                imageHeight: response.imageHeight,
+                detectedVerticalLines: verticalLines.slice(),
+                detectedHorizontalLines: horizontalLines.slice(),
+                verticalLines,
+                horizontalLines,
+                warnings: Array.isArray(response.warnings) ? response.warnings.slice() : []
+            };
+            selectedGridLine = null;
+            renderSplitPreview();
+        })
+        .catch(function (xhr) {
+            const response = xhr.responseJSON || {};
+            showError(response.message || 'Split preview failed.');
+            splitPreviewState = null;
+            renderSplitPreview();
+        })
+        .finally(function () {
+            updateSingleExportButtonState();
+            updateGridControlsState();
+            endLoad();
+        });
+}
+
+function normalizeLineList(lines, maxValue) {
+    if (!Array.isArray(lines)) {
+        return [];
+    }
+
+    const unique = new Set();
+    lines.forEach(function (line) {
+        const value = Number(line);
+        if (!Number.isFinite(value)) {
+            return;
+        }
+
+        unique.add(Math.min(Math.max(Math.round(value), 0), maxValue));
+    });
+
+    return Array.from(unique).sort((a, b) => a - b);
+}
+
+function renderSplitPreview() {
+    if (!currentScreenshotDataUrl) {
+        $('.screenshot-preview').empty();
+        $('.split-preview-status').html('');
+        updateGridControlsState();
+        return;
+    }
+
+    if (!splitPreviewState) {
+        $('.screenshot-preview').html(
+            `<img class="img-fluid"
+                alt="Character box screenshot"
+                src="${currentScreenshotDataUrl}"
+                style="margin: auto; display: block"
+                width=200>`
+        );
+        $('.split-preview-status').html('');
+        updateGridControlsState();
+        return;
+    }
+
+    const verticalLines = splitPreviewState.verticalLines;
+    const horizontalLines = splitPreviewState.horizontalLines;
+    const verticalMarkup = verticalLines.map(function (line, index) {
+        const isSelected = selectedGridLine &&
+            selectedGridLine.axis === 'vertical' &&
+            selectedGridLine.index === index;
+        return `<div class="split-preview__line split-preview__line--vertical ${isSelected ? 'split-preview__line--selected' : ''}"
+            data-axis="vertical"
+            data-index="${index}"
+            style="left: ${(line / splitPreviewState.imageWidth) * 100}%"></div>`;
+    }).join('');
+    const horizontalMarkup = horizontalLines.map(function (line, index) {
+        const isSelected = selectedGridLine &&
+            selectedGridLine.axis === 'horizontal' &&
+            selectedGridLine.index === index;
+        return `<div class="split-preview__line split-preview__line--horizontal ${isSelected ? 'split-preview__line--selected' : ''}"
+            data-axis="horizontal"
+            data-index="${index}"
+            style="top: ${(line / splitPreviewState.imageHeight) * 100}%"></div>`;
+    }).join('');
+
+    $('.screenshot-preview').html(
+        `<div class="split-preview__stage">
+            <img class="img-fluid"
+                alt="Character box screenshot split preview"
+                src="${currentScreenshotDataUrl}">
+            <div class="split-preview__overlay">${verticalMarkup}${horizontalMarkup}</div>
+        </div>`
+    );
+
+    $('.split-preview__line').on('mousedown touchstart', startGridDrag);
+    renderSplitPreviewStatus();
+    updateGridControlsState();
+}
+
+function renderSplitPreviewStatus() {
+    if (!splitPreviewState) {
+        $('.split-preview-status').html('');
+        return;
+    }
+
+    const slotCount = getManualGridSlotCount();
+    const warningMarkup = splitPreviewState.warnings.length
+        ? `<div class="alert alert-warning mt-2 mb-0">${splitPreviewState.warnings.map(escapeHtml).join('<br>')}</div>`
+        : '';
+    const validClass = isManualGridValid() ? 'alert-info' : 'alert-warning';
+    const statusMessage = isManualGridValid()
+        ? `Preview grid has <strong>${slotCount}</strong> slot${slotCount === 1 ? '' : 's'}.`
+        : 'Create at least two vertical and two horizontal lines before analyzing.';
+
+    $('.split-preview-status').html(
+        `<div class="alert ${validClass} mb-0">${statusMessage}</div>${warningMarkup}`
+    );
+}
+
+function addGridLine(axis) {
+    if (!splitPreviewState) {
+        return;
+    }
+
+    const key = axis === 'vertical' ? 'verticalLines' : 'horizontalLines';
+    const maxValue = axis === 'vertical' ? splitPreviewState.imageWidth : splitPreviewState.imageHeight;
+    const lines = splitPreviewState[key].slice();
+
+    if (lines.length < 2) {
+        splitPreviewState[key] = [0, maxValue];
+        selectedGridLine = { axis, index: 1 };
+        renderSplitPreview();
+        updateSingleExportButtonState();
+        return;
+    }
+
+    let insertAfter = 0;
+    let largestGap = -1;
+    for (let index = 0; index < lines.length - 1; index += 1) {
+        const gap = lines[index + 1] - lines[index];
+        if (gap > largestGap) {
+            largestGap = gap;
+            insertAfter = index;
+        }
+    }
+
+    const newValue = Math.round(lines[insertAfter] + largestGap / 2);
+    lines.splice(insertAfter + 1, 0, newValue);
+    splitPreviewState[key] = normalizeLineList(lines, maxValue);
+    selectedGridLine = { axis, index: splitPreviewState[key].indexOf(newValue) };
+    renderSplitPreview();
+    updateSingleExportButtonState();
+}
+
+function removeSelectedGridLine() {
+    if (!splitPreviewState || !selectedGridLine) {
+        return;
+    }
+
+    const key = selectedGridLine.axis === 'vertical' ? 'verticalLines' : 'horizontalLines';
+    splitPreviewState[key].splice(selectedGridLine.index, 1);
+    selectedGridLine = null;
+    renderSplitPreview();
+    updateSingleExportButtonState();
+}
+
+function resetGridLinesToDetected() {
+    if (!splitPreviewState) {
+        return;
+    }
+
+    splitPreviewState.verticalLines = splitPreviewState.detectedVerticalLines.slice();
+    splitPreviewState.horizontalLines = splitPreviewState.detectedHorizontalLines.slice();
+    selectedGridLine = null;
+    renderSplitPreview();
+    updateSingleExportButtonState();
+}
+
+function startGridDrag(event) {
+    if (!splitPreviewState) {
+        return;
+    }
+
+    event.preventDefault();
+    const target = $(event.currentTarget);
+    activeGridDrag = {
+        axis: target.attr('data-axis'),
+        index: Number(target.attr('data-index'))
+    };
+    selectedGridLine = {
+        axis: activeGridDrag.axis,
+        index: activeGridDrag.index
+    };
+    renderSplitPreview();
+}
+
+function handleGridDragMove(event) {
+    if (!activeGridDrag || !splitPreviewState) {
+        return;
+    }
+
+    event.preventDefault();
+    const value = getGridPointerValue(event, activeGridDrag.axis);
+    if (value === null) {
+        return;
+    }
+
+    const key = activeGridDrag.axis === 'vertical' ? 'verticalLines' : 'horizontalLines';
+    const maxValue = activeGridDrag.axis === 'vertical'
+        ? splitPreviewState.imageWidth
+        : splitPreviewState.imageHeight;
+    const clampedValue = Math.min(Math.max(Math.round(value), 0), maxValue);
+
+    splitPreviewState[key][activeGridDrag.index] = clampedValue;
+    splitPreviewState[key] = normalizeLineList(splitPreviewState[key], maxValue);
+    selectedGridLine = {
+        axis: activeGridDrag.axis,
+        index: findNearestLineIndex(splitPreviewState[key], clampedValue)
+    };
+    activeGridDrag.index = selectedGridLine.index;
+    renderSplitPreview();
+    updateSingleExportButtonState();
+}
+
+function endGridDrag() {
+    activeGridDrag = null;
+}
+
+function getGridPointerValue(event, axis) {
+    const image = $('.split-preview__stage img').get(0);
+    if (!image || !splitPreviewState) {
+        return null;
+    }
+
+    const originalEvent = event.originalEvent || event;
+    const pointer = originalEvent.touches && originalEvent.touches.length
+        ? originalEvent.touches[0]
+        : originalEvent;
+    const bounds = image.getBoundingClientRect();
+
+    if (!bounds.width || !bounds.height) {
+        return null;
+    }
+
+    if (axis === 'vertical') {
+        return ((pointer.clientX - bounds.left) / bounds.width) * splitPreviewState.imageWidth;
+    }
+
+    return ((pointer.clientY - bounds.top) / bounds.height) * splitPreviewState.imageHeight;
+}
+
+function findNearestLineIndex(lines, value) {
+    if (!lines.length) {
+        return 0;
+    }
+
+    let nearestIndex = 0;
+    let nearestDistance = Math.abs(lines[0] - value);
+    for (let index = 1; index < lines.length; index += 1) {
+        const distance = Math.abs(lines[index] - value);
+        if (distance < nearestDistance) {
+            nearestIndex = index;
+            nearestDistance = distance;
+        }
+    }
+    return nearestIndex;
+}
+
+function getManualGridSlotCount() {
+    if (!splitPreviewState) {
+        return 0;
+    }
+
+    return Math.max(splitPreviewState.verticalLines.length - 1, 0) *
+        Math.max(splitPreviewState.horizontalLines.length - 1, 0);
+}
+
+function isManualGridValid() {
+    return Boolean(
+        splitPreviewState &&
+        splitPreviewState.verticalLines.length >= 2 &&
+        splitPreviewState.horizontalLines.length >= 2 &&
+        getManualGridSlotCount() > 0
+    );
+}
+
+function getManualGridPayload() {
+    return {
+        verticalLines: splitPreviewState.verticalLines.slice(),
+        horizontalLines: splitPreviewState.horizontalLines.slice()
+    };
+}
+
+function updateGridControlsState() {
+    const hasPreview = Boolean(splitPreviewState);
+    $('#add-vertical-line-btn, #add-horizontal-line-btn, #reset-grid-lines-btn')
+        .attr('disabled', !hasPreview || isBatchRunning);
+    $('#remove-grid-line-btn')
+        .attr('disabled', !hasPreview || !selectedGridLine || isBatchRunning);
+}
+
+function resetSplitPreviewState() {
+    splitPreviewState = null;
+    selectedGridLine = null;
+    activeGridDrag = null;
+    $('.split-preview-status').html('');
+    updateGridControlsState();
 }
 
 function setBatchRunningState(isRunning) {
@@ -140,6 +472,7 @@ function setBatchRunningState(isRunning) {
     updateImageSizeControls();
     updateSingleExportButtonState();
     updateBatchExportButtonState();
+    updateGridControlsState();
 }
 
 function getSelectedBatchFiles() {
@@ -184,10 +517,17 @@ function exportCharacterBox() {
         return;
     }
 
+    if (!isManualGridValid()) {
+        showError('Review the split preview and create at least one valid slot before analyzing.');
+        return;
+    }
+
     if (!exportOptionsResult.valid) {
         showError(exportOptionsResult.message);
         return;
     }
+
+    exportOptionsResult.options.manualGrid = getManualGridPayload();
 
     load();
     post('/export', buildExportRequestBody(currentScreenshotB64, exportOptionsResult.options))

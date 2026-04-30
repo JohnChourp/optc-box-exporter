@@ -299,6 +299,77 @@ class ExportRouteTypeFilterTests(unittest.TestCase):
             6,
         )
 
+    def test_split_preview_returns_detected_grid_metadata(self) -> None:
+        preview_payload = {
+            'imageWidth': 100,
+            'imageHeight': 80,
+            'verticalLines': [10, 50, 90],
+            'horizontalLines': [20, 60],
+            'rectangles': [{'x1': 10, 'y1': 20, 'x2': 50, 'y2': 60, 'row': 0, 'column': 0}],
+            'slotCount': 2,
+            'warnings': [],
+        }
+
+        with patch('optcbx.app_flask.optcbx.detect_split_preview',
+                   return_value=preview_payload) as mocked_preview:
+            response = self.client.post('/split-preview', json={
+                'image': self.image_b64,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['imageWidth'], 100)
+        self.assertEqual(payload['verticalLines'], [10, 50, 90])
+        self.assertEqual(payload['slotCount'], 2)
+        self.assertEqual(mocked_preview.call_args.kwargs['approach'], 'gradient_based')
+
+    def test_export_passes_manual_grid_to_matcher(self) -> None:
+        runtime = {'web_ready': True}
+        characters = [Character('Dual unit', ['DEX', 'QCK'], ['Driven'], '6', 202)]
+        thumbnails = np.zeros((1, 4, 4, 3), dtype='uint8')
+
+        with patch('optcbx.app_flask._build_runtime_status', return_value=runtime), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot',
+                      return_value=(characters, thumbnails)) as mocked_export:
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 64,
+                'returnThumbnails': True,
+                'manualGrid': {
+                    'verticalLines': [4, 0, 2],
+                    'horizontalLines': [0, 4],
+                },
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            mocked_export.call_args.kwargs['manual_grid'],
+            {
+                'verticalLines': [0, 2, 4],
+                'horizontalLines': [0, 4],
+            },
+        )
+
+    def test_export_rejects_invalid_manual_grid(self) -> None:
+        runtime = {'web_ready': True}
+
+        with patch('optcbx.app_flask._build_runtime_status', return_value=runtime), \
+                patch('optcbx.app_flask.optcbx.find_characters_from_screenshot') as mocked_export:
+            response = self.client.post('/export', json={
+                'image': self.image_b64,
+                'imageSize': 64,
+                'returnThumbnails': True,
+                'manualGrid': {
+                    'verticalLines': [0],
+                    'horizontalLines': [0, 4],
+                },
+            })
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertIn('manualGrid.verticalLines', payload['message'])
+        mocked_export.assert_not_called()
+
     def test_export_rejects_out_of_range_image_size(self) -> None:
         response = self.client.post('/export', json={
             'image': self.image_b64,

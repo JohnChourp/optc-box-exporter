@@ -1,4 +1,7 @@
 from .square_detection import detect_characters
+from .square_detection import detect_characters_from_manual_grid
+from .square_detection import detect_split_preview
+from .square_detection import normalize_manual_grid
 
 from .matcher import find_characters_ids
 from .matcher import find_characters_from_screenshot

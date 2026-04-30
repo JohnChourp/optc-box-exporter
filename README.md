@@ -180,6 +180,15 @@ API behavior for `POST /export`:
 - Optional `charactersPerRow` can be provided as a positive integer.
   When present, export uses this row size to sort detected crops before matching.
   This can improve ordering/matching on screenshots that do not follow the default `5` per row layout.
+- Optional `manualGrid` can be provided as
+  `{ "verticalLines": [x1, x2, ...], "horizontalLines": [y1, y2, ...] }`.
+  When present, export crops slots from adjacent grid lines instead of using
+  automatic split detection.
+
+The browser single-image flow uses `POST /split-preview` before `POST /export`.
+`/split-preview` accepts `{ "image": "<base64 screenshot>" }` and returns source
+dimensions, detected grid lines, generated slot rectangles, slot count, and any
+preview warnings. Batch export still calls `/export` directly.
 
 `POST /export` response now also includes:
 

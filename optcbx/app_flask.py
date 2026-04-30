@@ -220,6 +220,28 @@ def feedback():
     return {"message": "thanks for the feedback"}, 200
 
 
+@app.route('/split-preview', methods=['POST'])
+def split_preview():
+    payload = request.get_json(silent=True) or {}
+    b64_image = payload.get("image")
+
+    if not b64_image:
+        return {"message": "Missing screenshot payload."}, 400
+
+    try:
+        im = _decode_b64_image(b64_image)
+    except (binascii.Error, UnidentifiedImageError, ValueError):
+        return {"message": "Invalid screenshot payload."}, 400
+
+    im = np.flip(np.array(im), -1).copy()
+
+    try:
+        return jsonify(optcbx.detect_split_preview(im, approach='gradient_based'))
+    except Exception as exc:
+        print(str(exc))
+        return {"message": f"Split preview failed: {exc}"}, 500
+
+
 @app.route('/export', methods=['POST'])
 def export():
     payload = request.get_json(silent=True) or {}
@@ -283,8 +305,7 @@ def export():
         }), 400
 
     try:
-        image_bytes = base64.b64decode(b64_image.encode())
-        im = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        im = _decode_b64_image(b64_image)
     except (binascii.Error, UnidentifiedImageError, ValueError):
         return {"message": "Invalid screenshot payload."}, 400
 
@@ -292,6 +313,15 @@ def export():
     im.save(_random_name())
 
     im = np.flip(np.array(im), -1).copy()
+
+    try:
+        manual_grid = _parse_manual_grid(payload, im.shape)
+    except ValueError as exc:
+        return {
+            "message": str(exc),
+            "appliedTypes": list(allowed_types),
+            "appliedClasses": list(allowed_classes),
+        }, 400
 
     try:
         if return_thumbnails:
@@ -303,6 +333,7 @@ def export():
                 allowed_types=allowed_types,
                 allowed_classes=allowed_classes,
                 characters_per_row=characters_per_row,
+                manual_grid=manual_grid,
             )
             thumbnails = np.flip(thumbnails, -1)
 
@@ -330,6 +361,7 @@ def export():
                 allowed_types=allowed_types,
                 allowed_classes=allowed_classes,
                 characters_per_row=characters_per_row,
+                manual_grid=manual_grid,
             )
 
             if len(characters) == 0:
@@ -377,6 +409,18 @@ def _build_no_detection_message(allowed_types, allowed_classes):
     if active_filters:
         return message + " Active filters: " + "; ".join(active_filters) + "."
     return message
+
+
+def _decode_b64_image(b64_image):
+    image_bytes = base64.b64decode(b64_image.encode())
+    return Image.open(io.BytesIO(image_bytes)).convert('RGB')
+
+
+def _parse_manual_grid(payload, image_shape):
+    manual_grid = payload.get("manualGrid")
+    if manual_grid is None:
+        return None
+    return optcbx.normalize_manual_grid(manual_grid, image_shape)
 
 
 def _parse_image_size(payload):

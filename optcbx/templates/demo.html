@@ -216,12 +216,34 @@
   <div class="screenshot-preview">
 
   </div>
+
+  <div class="split-preview-controls mt-3">
+    <div class="split-preview-controls__buttons">
+      <button type="button"
+        class="btn btn-outline-secondary btn-sm"
+        id="add-vertical-line-btn"
+        disabled>Add vertical line</button>
+      <button type="button"
+        class="btn btn-outline-secondary btn-sm"
+        id="add-horizontal-line-btn"
+        disabled>Add horizontal line</button>
+      <button type="button"
+        class="btn btn-outline-danger btn-sm"
+        id="remove-grid-line-btn"
+        disabled>Remove selected line</button>
+      <button type="button"
+        class="btn btn-outline-secondary btn-sm"
+        id="reset-grid-lines-btn"
+        disabled>Reset detected grid</button>
+    </div>
+    <div class="split-preview-status mt-2"></div>
+  </div>
 </form>
 
 <button class="mt-4 btn btn-block btn-lg btn-outline-secondary text-center"
   id="export-btn"
   onclick="exportCharacterBox()"
-  disabled="true">Export!</button>
+  disabled="true">Analyze grid</button>
 
 <div class="mt-3 export-summary"></div>
 <div class="export-error"></div>

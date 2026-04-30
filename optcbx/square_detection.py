@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
@@ -7,6 +7,7 @@ import yaml
 ImageSize = Union[Tuple[int, int], int]
 DetectResults = Union[List[np.ndarray], Tuple[List[np.ndarray],
                                               List[np.ndarray]]]
+ManualGrid = Dict[str, Sequence[Union[int, float]]]
 
 CHARACTER_TRIM_FRACTIONS = {
     'top': 0.03,
@@ -15,6 +16,8 @@ CHARACTER_TRIM_FRACTIONS = {
     'left': 0.03,
 }
 DEFAULT_CHARACTERS_PER_ROW = 5
+GRID_LINE_MERGE_TOLERANCE_FRACTION = 0.005
+MIN_PREVIEW_SLOT_WARNING_COUNT = 3
 
 
 def select_rgb_white_yellow(image: np.ndarray) -> np.ndarray:
@@ -103,6 +106,79 @@ def detect_characters(image: Union[str, np.ndarray],
         return _smart_approach(image, characters_size, return_rectangles)
 
 
+def detect_split_preview(image: Union[str, np.ndarray],
+                         approach: str = 'gradient_based') -> Dict[str, object]:
+    if approach != 'gradient_based':
+        raise ValueError("Split preview only supports the 'gradient_based' approach.")
+
+    if isinstance(image, str):
+        image = cv2.imread(image)
+
+    rects = _detect_gradient_rectangles(image)
+    vertical_lines, horizontal_lines = _grid_lines_from_rectangles(rects, image.shape)
+    slot_rects = _rectangles_from_grid_lines(vertical_lines, horizontal_lines)
+    warnings = []
+
+    if len(rects) == 0:
+        warnings.append("No character slots were detected automatically.")
+    elif len(slot_rects) < MIN_PREVIEW_SLOT_WARNING_COUNT:
+        warnings.append(
+            f"Only {len(slot_rects)} character slot(s) were detected automatically."
+        )
+
+    return {
+        "imageWidth": int(image.shape[1]),
+        "imageHeight": int(image.shape[0]),
+        "verticalLines": vertical_lines,
+        "horizontalLines": horizontal_lines,
+        "rectangles": slot_rects,
+        "slotCount": len(slot_rects),
+        "warnings": warnings,
+    }
+
+
+def detect_characters_from_manual_grid(
+        image: Union[str, np.ndarray],
+        manual_grid: ManualGrid,
+        characters_size: Optional[ImageSize] = None) -> Tuple[np.ndarray, np.ndarray]:
+    if isinstance(characters_size, int):
+        characters_size = (characters_size, ) * 2
+
+    if isinstance(image, str):
+        image = cv2.imread(image)
+
+    normalized_grid = normalize_manual_grid(manual_grid, image.shape)
+    valid_rects = _xyxy_to_xywh(_grid_rectangles_to_array(
+        _rectangles_from_grid_lines(
+            normalized_grid["verticalLines"],
+            normalized_grid["horizontalLines"],
+        )
+    ))
+    return _build_character_crops_from_rectangles(image, valid_rects, characters_size)
+
+
+def normalize_manual_grid(manual_grid: ManualGrid,
+                          image_shape: Tuple[int, ...]) -> Dict[str, List[int]]:
+    if not isinstance(manual_grid, dict):
+        raise ValueError("manualGrid must be an object with verticalLines and horizontalLines.")
+
+    width = int(image_shape[1])
+    height = int(image_shape[0])
+
+    return {
+        "verticalLines": _normalize_grid_lines(
+            manual_grid.get("verticalLines"),
+            "manualGrid.verticalLines",
+            width,
+        ),
+        "horizontalLines": _normalize_grid_lines(
+            manual_grid.get("horizontalLines"),
+            "manualGrid.horizontalLines",
+            height,
+        ),
+    }
+
+
 # Again, this is for efficiency, global variables usually suck
 _model = None
 
@@ -172,12 +248,29 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
     if isinstance(image, str):
         image = cv2.imread(image)
 
-    # Crop top and bottom area
-    h_top_crop = int(image.shape[0] * .25)
-    h_bot_crop = int(image.shape[0] * .15)
+    valid_rects = _detect_gradient_rectangles(image)
+    characters, valid_rects = _build_character_crops_from_rectangles(
+        image,
+        valid_rects,
+        characters_size,
+    )
 
-    # image = image[h_top_crop:]
-    # image = image[:-h_bot_crop]
+    if screen == 'character_box' and characters_size is not None:
+        characters, valid_rects = _sort_detected_characters_by_grid(
+            characters,
+            valid_rects,
+            characters_per_row=characters_per_row,
+        )
+
+    if not return_rectangles:
+        return characters
+    else:
+        return characters, _xywh_to_xyxy(valid_rects)
+
+
+def _detect_gradient_rectangles(image: np.ndarray) -> np.ndarray:
+    if image is None or image.size == 0:
+        return np.empty((0, 4), dtype='int32')
 
     # Retrieve yellows and whites from the image
     res = select_rgb_white_yellow(image)
@@ -197,10 +290,7 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
                             minLineLength=5,
                             maxLineGap=4)
     if lines is None:
-        if not return_rectangles:
-            return np.empty((0, *(characters_size or (0, 0)), 3), dtype='uint8')
-        return (np.empty((0, *(characters_size or (0, 0)), 3), dtype='uint8'),
-                np.empty((0, 4), dtype='int32'))
+        return np.empty((0, 4), dtype='int32')
 
     lines = lines.reshape(-1, 4)
 
@@ -218,10 +308,7 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
     cnts = cnts[0] if len(cnts) == 2 else cnts[1]
 
     if not cnts:
-        if not return_rectangles:
-            return np.empty((0, *(characters_size or (0, 0)), 3), dtype='uint8')
-        return (np.empty((0, *(characters_size or (0, 0)), 3), dtype='uint8'),
-                np.empty((0, 4), dtype='int32'))
+        return np.empty((0, 4), dtype='int32')
 
     # Get the rectangles surrounding the countors and compute its area and aspect
     # ratio
@@ -238,33 +325,7 @@ def _gradient_based_approach(image: Union[str, np.ndarray],
     valid_rectangles = (areas > min_area) & (areas < max_area)
     valid_rectangles &= (ar > .8) & (ar < 1.2)
 
-    valid_rects = rects[valid_rectangles].astype('int32')
-    valid_rects, characters = _extract_valid_character_crops(image, valid_rects)
-    characters = [trim_character_crop(o) for o in characters]
-
-    if characters_size is not None:
-        if len(characters) == 0:
-            empty = np.empty((0, *characters_size, 3), dtype='uint8')
-            if not return_rectangles:
-                return empty
-            return empty, np.empty((0, 4), dtype='int32')
-
-        characters = np.array(
-            [cv2.resize(o, characters_size) for o in characters])
-
-        if screen == 'character_box':
-            characters, valid_rects = _sort_detected_characters_by_grid(
-                characters,
-                valid_rects,
-                characters_per_row=characters_per_row,
-            )
-
-    if not return_rectangles:
-        return characters
-    else:
-        valid_rects[..., 2] = valid_rects[..., 0] + valid_rects[..., 2]
-        valid_rects[..., 3] = valid_rects[..., 1] + valid_rects[..., 3]
-        return characters, valid_rects
+    return rects[valid_rectangles].astype('int32')
 
 
 def _extract_valid_character_crops(image: np.ndarray, rects: np.ndarray):
@@ -289,6 +350,154 @@ def _extract_valid_character_crops(image: np.ndarray, rects: np.ndarray):
         characters.append(crop)
 
     return np.asarray(valid_rects, dtype='int32'), characters
+
+
+def _build_character_crops_from_rectangles(
+        image: np.ndarray,
+        rects: np.ndarray,
+        characters_size: Optional[Tuple[int, int]] = None):
+    valid_rects, characters = _extract_valid_character_crops(image, rects)
+    characters = [trim_character_crop(o) for o in characters]
+
+    if characters_size is None:
+        if len(characters) == 0:
+            return np.empty((0, 0, 0, 3), dtype='uint8'), valid_rects
+        return characters, valid_rects
+
+    if len(characters) == 0:
+        return np.empty((0, *characters_size, 3), dtype='uint8'), valid_rects
+
+    return np.array([cv2.resize(o, characters_size) for o in characters]), valid_rects
+
+
+def _xywh_to_xyxy(rects: np.ndarray) -> np.ndarray:
+    if rects.size == 0:
+        return np.empty((0, 4), dtype='int32')
+
+    xyxy = rects.copy()
+    xyxy[..., 2] = xyxy[..., 0] + xyxy[..., 2]
+    xyxy[..., 3] = xyxy[..., 1] + xyxy[..., 3]
+    return xyxy.astype('int32')
+
+
+def _xyxy_to_xywh(rects: np.ndarray) -> np.ndarray:
+    if rects.size == 0:
+        return np.empty((0, 4), dtype='int32')
+
+    xywh = rects.copy()
+    xywh[..., 2] = xywh[..., 2] - xywh[..., 0]
+    xywh[..., 3] = xywh[..., 3] - xywh[..., 1]
+    return xywh.astype('int32')
+
+
+def _grid_lines_from_rectangles(
+        rects: np.ndarray,
+        image_shape: Tuple[int, ...]) -> Tuple[List[int], List[int]]:
+    if rects.size == 0:
+        return [], []
+
+    xyxy = _xywh_to_xyxy(rects)
+    tolerance = max(
+        2,
+        int(round(min(int(image_shape[0]), int(image_shape[1])) *
+                  GRID_LINE_MERGE_TOLERANCE_FRACTION)),
+    )
+    vertical_lines = _merge_nearby_grid_lines(
+        np.concatenate([xyxy[:, 0], xyxy[:, 2]]),
+        tolerance,
+        int(image_shape[1]),
+    )
+    horizontal_lines = _merge_nearby_grid_lines(
+        np.concatenate([xyxy[:, 1], xyxy[:, 3]]),
+        tolerance,
+        int(image_shape[0]),
+    )
+    return vertical_lines, horizontal_lines
+
+
+def _merge_nearby_grid_lines(values: np.ndarray,
+                             tolerance: int,
+                             max_value: int) -> List[int]:
+    if values.size == 0:
+        return []
+
+    sorted_values = sorted(int(round(value)) for value in values)
+    clusters: List[List[int]] = []
+
+    for value in sorted_values:
+        value = min(max(value, 0), max_value)
+        if not clusters or value - clusters[-1][-1] > tolerance:
+            clusters.append([value])
+        else:
+            clusters[-1].append(value)
+
+    return [
+        min(max(int(round(sum(cluster) / len(cluster))), 0), max_value)
+        for cluster in clusters
+    ]
+
+
+def _rectangles_from_grid_lines(vertical_lines: Sequence[int],
+                                horizontal_lines: Sequence[int]) -> List[Dict[str, int]]:
+    rectangles = []
+
+    for row_index in range(max(len(horizontal_lines) - 1, 0)):
+        y1 = int(horizontal_lines[row_index])
+        y2 = int(horizontal_lines[row_index + 1])
+        if y2 <= y1:
+            continue
+
+        for column_index in range(max(len(vertical_lines) - 1, 0)):
+            x1 = int(vertical_lines[column_index])
+            x2 = int(vertical_lines[column_index + 1])
+            if x2 <= x1:
+                continue
+
+            rectangles.append({
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "row": row_index,
+                "column": column_index,
+            })
+
+    return rectangles
+
+
+def _grid_rectangles_to_array(rectangles: Sequence[Dict[str, int]]) -> np.ndarray:
+    if not rectangles:
+        return np.empty((0, 4), dtype='int32')
+
+    return np.asarray([
+        [rect["x1"], rect["y1"], rect["x2"], rect["y2"]]
+        for rect in rectangles
+    ], dtype='int32')
+
+
+def _normalize_grid_lines(raw_lines,
+                          field_name: str,
+                          max_value: int) -> List[int]:
+    if not isinstance(raw_lines, (list, tuple)):
+        raise ValueError(f"{field_name} must be an array of numeric values.")
+
+    normalized = []
+    for raw_line in raw_lines:
+        if isinstance(raw_line, bool) or not isinstance(raw_line, (int, float)):
+            raise ValueError(f"{field_name} must contain only numeric values.")
+        if not np.isfinite(raw_line):
+            raise ValueError(f"{field_name} must contain only finite numeric values.")
+
+        value = int(round(raw_line))
+        if value < 0 or value > max_value:
+            raise ValueError(f"{field_name} values must be within the source image bounds.")
+        normalized.append(value)
+
+    normalized = sorted(set(normalized))
+    if len(normalized) < 2:
+        raise ValueError(f"{field_name} must contain at least two unique values.")
+
+    return normalized
 
 
 def _resolve_characters_per_row(characters_per_row: Optional[int]) -> int:

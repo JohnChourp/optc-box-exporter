@@ -9,7 +9,11 @@ import cv2
 import numpy as np
 import tqdm.auto as tqdm
 
-from optcbx.square_detection import detect_characters, trim_character_crop
+from optcbx.square_detection import (
+    detect_characters,
+    detect_characters_from_manual_grid,
+    trim_character_crop,
+)
 from optcbx.units import Character, parse_units
 
 SUPPORTED_TYPES = ('STR', 'DEX', 'QCK', 'PSY', 'INT')
@@ -113,7 +117,8 @@ def find_characters_from_screenshot(
         approach: str = 'smart',
         allowed_types: Optional[Sequence[str]] = None,
         allowed_classes: Optional[Sequence[str]] = None,
-        characters_per_row: Optional[int] = None) -> Union[
+        characters_per_row: Optional[int] = None,
+        manual_grid: Optional[Dict[str, Sequence[Union[int, float]]]] = None) -> Union[
             List[Character],
             Tuple[List[Character], np.ndarray],
             Tuple[List[Character], List[Dict[str, Any]]],
@@ -123,12 +128,19 @@ def find_characters_from_screenshot(
     if isinstance(image_size, int):
         image_size = (image_size,) * 2
 
-    characters = detect_characters(
-        screenshot,
-        image_size,
-        approach=approach,
-        characters_per_row=characters_per_row,
-    )
+    if manual_grid is not None:
+        characters, _ = detect_characters_from_manual_grid(
+            screenshot,
+            manual_grid,
+            image_size,
+        )
+    else:
+        characters = detect_characters(
+            screenshot,
+            image_size,
+            approach=approach,
+            characters_per_row=characters_per_row,
+        )
     match_result = find_characters_ids(
         characters,
         dist_method=dist_method,
