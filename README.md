@@ -222,7 +222,6 @@ The CLI demo is legacy code. It still needs extra AI assets from:
 sh ./ai/prepare-ai.sh
 ```
 
-> Note: If OpenCV shows warnings regarding png files, run `fix.bat` inside `tools`.
 
 ## Training skill (audit/fix loop)
 
