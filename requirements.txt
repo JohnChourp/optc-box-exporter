@@ -6,5 +6,5 @@ numpy>=1.26,<2
 opencv-python>=4.10,<5
 Pillow>=10,<12
 pyyaml>=6,<7
-requests>=2.31,<3
+requests>=2.34.2,<3
 tqdm>=4.66,<5
