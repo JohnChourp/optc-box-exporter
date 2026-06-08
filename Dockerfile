@@ -1,4 +1,4 @@
-FROM python:3.7.7
+FROM python:3.14.5
 
 WORKDIR /optc-box-exporter
 
